@@ -190,7 +190,9 @@ export const useWorkSessionStore = create<WorkSessionState>((set, get) => ({
     logger.info('session', `📍 ENTRADA: ${localNome}`);
 
     // Mostra notificação
-    const notificationId = await mostrarNotificacaoEntrada(localId, localNome);
+    //const notificationId = await mostrarNotificacaoEntrada(localId, localNome);//
+
+    const notificationId = '';
 
     // Configura auto-start em 30 segundos
     const timeoutId = setTimeout(async () => {

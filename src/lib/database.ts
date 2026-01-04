@@ -52,6 +52,7 @@ export interface RegistroDB {
   hash_integridade: string | null;
   cor: string | null;
   device_id: string | null;
+  pausa_minutos: number | null; // NOVO CAMPO
   created_at: string;
   synced_at: string | null;
 }
@@ -79,8 +80,6 @@ export interface EstatisticasDia {
   total_minutos: number;
   total_sessoes: number;
 }
-
-// 1. ADICIONAR ESTE TIPO junto com os outros tipos (linha ~70):
 
 export interface HeartbeatLogDB {
   id: string;
@@ -147,10 +146,23 @@ export async function initDatabase(): Promise<void> {
         hash_integridade TEXT,
         cor TEXT,
         device_id TEXT,
+        pausa_minutos INTEGER DEFAULT 0,
         created_at TEXT DEFAULT CURRENT_TIMESTAMP,
         synced_at TEXT
       )
     `);
+
+    // ============================================
+    // MIGRATION: Adicionar coluna pausa_minutos se não existir
+    // ============================================
+    try {
+      // Tenta adicionar a coluna - se já existe, vai dar erro e ignoramos
+      db.execSync(`ALTER TABLE registros ADD COLUMN pausa_minutos INTEGER DEFAULT 0`);
+      logger.info('database', '✅ Migration: coluna pausa_minutos adicionada');
+    } catch (migrationError) {
+      // Coluna já existe, ignorar erro
+      logger.debug('database', 'Coluna pausa_minutos já existe (ok)');
+    }
 
     // Tabela de auditoria de sync
     db.execSync(`
@@ -355,53 +367,33 @@ export interface CriarLocalParams {
   cor?: string;
 }
 
-/**
- * Cria um novo local de trabalho
- * - Valida distância mínima de 50m para outros locais ativos
- * - Valida nome único (case insensitive)
- */
 export async function criarLocal(params: CriarLocalParams): Promise<string> {
-  const { userId, nome, latitude, longitude, raio = 100, cor = '#3B82F6' } = params;
   const id = generateUUID();
   const timestamp = now();
 
   try {
-    // Validação 1: Distância mínima de 50m
-    const locaisAtivos = db.getAllSync<LocalDB>(
-      `SELECT * FROM locais WHERE user_id = ? AND status = 'active'`,
-      [userId]
-    );
-
-    for (const local of locaisAtivos) {
-      const distancia = calcularDistancia(latitude, longitude, local.latitude, local.longitude);
-      if (distancia < 50) {
-        const erro = `Muito próximo de "${local.nome}" (${distancia.toFixed(0)}m). Mínimo: 50m`;
-        logger.warn('database', erro);
-        throw new Error(erro);
-      }
-    }
-
-    // Validação 2: Nome único
-    const nomeDuplicado = locaisAtivos.find(
-      l => l.nome.toLowerCase() === nome.toLowerCase()
-    );
-    if (nomeDuplicado) {
-      throw new Error(`Já existe um local com o nome "${nome}"`);
-    }
-
-    // Insert
     db.runSync(
-      `INSERT INTO locais (id, user_id, nome, latitude, longitude, raio, cor, status, created_at, updated_at, last_seen_at)
-       VALUES (?, ?, ?, ?, ?, ?, ?, 'active', ?, ?, ?)`,
-      [id, userId, nome, latitude, longitude, raio, cor, timestamp, timestamp, timestamp]
+      `INSERT INTO locais (id, user_id, nome, latitude, longitude, raio, cor, status, last_seen_at, created_at, updated_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      [
+        id,
+        params.userId,
+        params.nome,
+        params.latitude,
+        params.longitude,
+        params.raio || 100,
+        params.cor || '#3B82F6',
+        'active',
+        timestamp,
+        timestamp,
+        timestamp
+      ]
     );
 
-    // Auditoria
-    await registrarSyncLog(userId, 'local', id, 'create', null, {
-      id, nome, latitude, longitude, raio, cor, status: 'active'
-    });
+    // Log de sync
+    await registrarSyncLog(params.userId, 'local', id, 'create', null, params);
 
-    logger.info('database', `✅ Local criado: ${nome}`, { id });
+    logger.info('database', `📍 Local criado: ${params.nome}`, { id });
     return id;
   } catch (error) {
     logger.error('database', 'Erro ao criar local', { error: String(error) });
@@ -409,51 +401,18 @@ export async function criarLocal(params: CriarLocalParams): Promise<string> {
   }
 }
 
-/**
- * Retorna todos os locais ativos do usuário
- */
-export async function getLocaisAtivos(userId: string): Promise<LocalDB[]> {
+export async function getLocais(userId: string): Promise<LocalDB[]> {
   try {
-    const locais = db.getAllSync<LocalDB>(
-      `SELECT * FROM locais WHERE user_id = ? AND status = 'active' ORDER BY nome`,
+    return db.getAllSync<LocalDB>(
+      `SELECT * FROM locais WHERE user_id = ? AND status = 'active' ORDER BY nome ASC`,
       [userId]
     );
-    
-    // Atualiza last_seen_at
-    if (locais.length > 0) {
-      const ids = locais.map(l => `'${l.id}'`).join(',');
-      db.runSync(
-        `UPDATE locais SET last_seen_at = ? WHERE id IN (${ids})`,
-        [now()]
-      );
-    }
-
-    logger.debug('database', `${locais.length} locais ativos carregados`);
-    return locais;
   } catch (error) {
     logger.error('database', 'Erro ao buscar locais', { error: String(error) });
     return [];
   }
 }
 
-/**
- * Retorna TODOS os locais (incluindo deletados) - para debug
- */
-export async function getTodosLocais(userId: string): Promise<LocalDB[]> {
-  try {
-    return db.getAllSync<LocalDB>(
-      `SELECT * FROM locais WHERE user_id = ? ORDER BY status, nome`,
-      [userId]
-    );
-  } catch (error) {
-    logger.error('database', 'Erro ao buscar todos locais', { error: String(error) });
-    return [];
-  }
-}
-
-/**
- * Busca local por ID
- */
 export async function getLocalById(id: string): Promise<LocalDB | null> {
   try {
     return db.getFirstSync<LocalDB>(
@@ -461,127 +420,92 @@ export async function getLocalById(id: string): Promise<LocalDB | null> {
       [id]
     );
   } catch (error) {
-    logger.error('database', 'Erro ao buscar local', { error: String(error) });
+    logger.error('database', 'Erro ao buscar local por ID', { error: String(error) });
     return null;
   }
 }
 
-/**
- * Atualiza um local
- */
 export async function atualizarLocal(
   id: string,
-  userId: string,
   updates: Partial<Pick<LocalDB, 'nome' | 'latitude' | 'longitude' | 'raio' | 'cor'>>
 ): Promise<void> {
   try {
-    const localAtual = await getLocalById(id);
-    if (!localAtual) {
-      throw new Error('Local não encontrado');
-    }
-
-    const campos: string[] = [];
-    const valores: unknown[] = [];
+    const setClauses: string[] = [];
+    const values: any[] = [];
 
     if (updates.nome !== undefined) {
-      campos.push('nome = ?');
-      valores.push(updates.nome);
+      setClauses.push('nome = ?');
+      values.push(updates.nome);
     }
     if (updates.latitude !== undefined) {
-      campos.push('latitude = ?');
-      valores.push(updates.latitude);
+      setClauses.push('latitude = ?');
+      values.push(updates.latitude);
     }
     if (updates.longitude !== undefined) {
-      campos.push('longitude = ?');
-      valores.push(updates.longitude);
+      setClauses.push('longitude = ?');
+      values.push(updates.longitude);
     }
     if (updates.raio !== undefined) {
-      campos.push('raio = ?');
-      valores.push(updates.raio);
+      setClauses.push('raio = ?');
+      values.push(updates.raio);
     }
     if (updates.cor !== undefined) {
-      campos.push('cor = ?');
-      valores.push(updates.cor);
+      setClauses.push('cor = ?');
+      values.push(updates.cor);
     }
 
-    if (campos.length === 0) return;
+    if (setClauses.length === 0) return;
 
-    campos.push('updated_at = ?', 'synced_at = NULL');
-    valores.push(now(), id);
+    setClauses.push('updated_at = ?');
+    values.push(now());
+
+    setClauses.push('synced_at = NULL');
+
+    values.push(id);
 
     db.runSync(
-      `UPDATE locais SET ${campos.join(', ')} WHERE id = ?`,
-      valores
+      `UPDATE locais SET ${setClauses.join(', ')} WHERE id = ?`,
+      values
     );
 
-    // Auditoria
-    await registrarSyncLog(userId, 'local', id, 'update', localAtual, {
-      ...localAtual,
-      ...updates,
-      updated_at: now()
-    });
-
-    logger.info('database', `✅ Local atualizado: ${localAtual.nome}`, { id });
+    logger.info('database', `📍 Local atualizado: ${id}`, { updates });
   } catch (error) {
     logger.error('database', 'Erro ao atualizar local', { error: String(error) });
     throw error;
   }
 }
 
-/**
- * Soft delete de local (marca como deleted)
- */
-export async function deletarLocal(id: string, userId: string): Promise<void> {
+export async function removerLocal(userId: string, id: string): Promise<void> {
   try {
-    const local = await getLocalById(id);
-    if (!local) {
-      throw new Error('Local não encontrado');
-    }
-
+    // Soft delete
     db.runSync(
-      `UPDATE locais SET status = 'deleted', deleted_at = ?, updated_at = ?, synced_at = NULL WHERE id = ?`,
-      [now(), now(), id]
+      `UPDATE locais SET status = 'deleted', deleted_at = ?, updated_at = ?, synced_at = NULL WHERE id = ? AND user_id = ?`,
+      [now(), now(), id, userId]
     );
 
-    // Auditoria
-    await registrarSyncLog(userId, 'local', id, 'delete', local, {
-      ...local,
-      status: 'deleted',
-      deleted_at: now()
-    });
+    // Log de sync
+    await registrarSyncLog(userId, 'local', id, 'delete', { id }, null);
 
-    logger.info('database', `🗑️ Local deletado: ${local.nome}`, { id });
+    logger.info('database', `🗑️ Local removido (soft): ${id}`);
   } catch (error) {
-    logger.error('database', 'Erro ao deletar local', { error: String(error) });
+    logger.error('database', 'Erro ao remover local', { error: String(error) });
     throw error;
   }
 }
 
-/**
- * Hard delete de locais deletados há mais de X dias
- */
-export async function purgeLocaisDeletados(dias: number = 7): Promise<number> {
+export async function atualizarLastSeen(id: string): Promise<void> {
   try {
-    const cutoff = new Date(Date.now() - dias * 24 * 60 * 60 * 1000).toISOString();
-    
-    const result = db.runSync(
-      `DELETE FROM locais WHERE status = 'deleted' AND deleted_at < ?`,
-      [cutoff]
+    db.runSync(
+      `UPDATE locais SET last_seen_at = ? WHERE id = ?`,
+      [now(), id]
     );
-
-    const count = result.changes;
-    if (count > 0) {
-      logger.info('database', `🧹 Purge: ${count} locais removidos permanentemente`);
-    }
-    return count;
   } catch (error) {
-    logger.error('database', 'Erro no purge de locais', { error: String(error) });
-    return 0;
+    logger.error('database', 'Erro ao atualizar last_seen', { error: String(error) });
   }
 }
 
 // ============================================
-// REGISTROS (Sessões) - CRUD
+// REGISTROS (SESSÕES) - CRUD
 // ============================================
 
 export interface CriarRegistroParams {
@@ -590,191 +514,179 @@ export interface CriarRegistroParams {
   localNome: string;
   tipo?: RegistroTipo;
   cor?: string;
-  deviceId?: string;
 }
 
-/**
- * Cria registro de entrada (inicia sessão)
- */
 export async function criarRegistroEntrada(params: CriarRegistroParams): Promise<string> {
-  const { userId, localId, localNome, tipo = 'automatico', cor, deviceId } = params;
   const id = generateUUID();
   const timestamp = now();
 
   try {
+    // Buscar cor do local se não fornecida
+    let cor = params.cor;
+    if (!cor) {
+      const local = await getLocalById(params.localId);
+      cor = local?.cor || '#3B82F6';
+    }
+
     db.runSync(
-      `INSERT INTO registros (id, user_id, local_id, local_nome, entrada, tipo, cor, device_id, created_at)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-      [id, userId, localId, localNome, timestamp, tipo, cor, deviceId, timestamp]
+      `INSERT INTO registros (id, user_id, local_id, local_nome, entrada, tipo, cor, pausa_minutos, created_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, 0, ?)`,
+      [
+        id,
+        params.userId,
+        params.localId,
+        params.localNome,
+        timestamp,
+        params.tipo || 'automatico',
+        cor,
+        timestamp
+      ]
     );
 
-    // Auditoria
-    await registrarSyncLog(userId, 'registro', id, 'create', null, {
-      id, local_id: localId, local_nome: localNome, entrada: timestamp, tipo
-    });
+    // Log de sync
+    await registrarSyncLog(params.userId, 'registro', id, 'create', null, params);
 
-    logger.info('session', `▶️ Entrada registrada: ${localNome}`, { id, localId });
+    logger.info('database', `📥 Registro criado: ${params.localNome}`, { id });
     return id;
   } catch (error) {
-    logger.error('database', 'Erro ao criar registro de entrada', { error: String(error) });
+    logger.error('database', 'Erro ao criar registro', { error: String(error) });
     throw error;
   }
 }
 
-/**
- * Registra saída (finaliza sessão)
- */
 export async function registrarSaida(
   userId: string,
   localId: string,
   ajusteMinutos: number = 0
-): Promise<string | null> {
+): Promise<void> {
   try {
-    // Busca sessão aberta para este local
-    const sessaoAberta = db.getFirstSync<RegistroDB>(
+    // Busca sessão ativa para este local
+    const sessao = db.getFirstSync<RegistroDB>(
       `SELECT * FROM registros WHERE user_id = ? AND local_id = ? AND saida IS NULL ORDER BY entrada DESC LIMIT 1`,
       [userId, localId]
     );
 
-    if (!sessaoAberta) {
-      logger.warn('database', 'Nenhuma sessão aberta para este local', { localId });
-      return null;
+    if (!sessao) {
+      throw new Error('Nenhuma sessão ativa encontrada para este local');
     }
 
-    // Calcula horário de saída (com ajuste se houver)
-    const saidaTime = new Date(Date.now() + ajusteMinutos * 60000);
-    const saida = saidaTime.toISOString();
-    const editadoManualmente = ajusteMinutos !== 0 ? 1 : 0;
+    // Calcular saída com ajuste
+    let saidaTime = new Date();
+    if (ajusteMinutos > 0) {
+      saidaTime = new Date(saidaTime.getTime() - ajusteMinutos * 60000);
+    }
 
     db.runSync(
-      `UPDATE registros SET saida = ?, editado_manualmente = ?, synced_at = NULL WHERE id = ?`,
-      [saida, editadoManualmente, sessaoAberta.id]
+      `UPDATE registros SET saida = ?, synced_at = NULL WHERE id = ?`,
+      [saidaTime.toISOString(), sessao.id]
     );
 
-    // Auditoria
-    await registrarSyncLog(userId, 'registro', sessaoAberta.id, 'update', sessaoAberta, {
-      ...sessaoAberta,
-      saida,
-      editado_manualmente: editadoManualmente
-    });
+    // Log de sync
+    await registrarSyncLog(userId, 'registro', sessao.id, 'update', 
+      { saida: null }, 
+      { saida: saidaTime.toISOString() }
+    );
 
-    logger.info('session', `⏹️ Saída registrada: ${sessaoAberta.local_nome}`, {
-      id: sessaoAberta.id,
-      ajuste: ajusteMinutos
-    });
-
-    return sessaoAberta.id;
+    logger.info('database', `📤 Saída registrada`, { id: sessao.id, ajusteMinutos });
   } catch (error) {
     logger.error('database', 'Erro ao registrar saída', { error: String(error) });
     throw error;
   }
 }
 
-/**
- * Busca sessão aberta (ativa) para um local
- */
-export async function getSessaoAberta(userId: string, localId: string): Promise<SessaoComputada | null> {
+export async function getSessaoAberta(userId: string, localId: string): Promise<RegistroDB | null> {
   try {
-    const row = db.getFirstSync<RegistroDB>(
+    return db.getFirstSync<RegistroDB>(
       `SELECT * FROM registros WHERE user_id = ? AND local_id = ? AND saida IS NULL ORDER BY entrada DESC LIMIT 1`,
       [userId, localId]
     );
-
-    if (!row) return null;
-
-    return {
-      ...row,
-      status: 'ativa',
-      duracao_minutos: calcularDuracao(row.entrada, null)
-    };
   } catch (error) {
     logger.error('database', 'Erro ao buscar sessão aberta', { error: String(error) });
     return null;
   }
 }
 
-/**
- * Busca qualquer sessão aberta do usuário (independente do local)
- */
 export async function getSessaoAtivaGlobal(userId: string): Promise<SessaoComputada | null> {
   try {
-    const row = db.getFirstSync<RegistroDB>(
+    const sessao = db.getFirstSync<RegistroDB>(
       `SELECT * FROM registros WHERE user_id = ? AND saida IS NULL ORDER BY entrada DESC LIMIT 1`,
       [userId]
     );
 
-    if (!row) return null;
+    if (!sessao) return null;
 
     return {
-      ...row,
+      ...sessao,
       status: 'ativa',
-      duracao_minutos: calcularDuracao(row.entrada, null)
+      duracao_minutos: calcularDuracao(sessao.entrada, null),
     };
   } catch (error) {
-    logger.error('database', 'Erro ao buscar sessão global', { error: String(error) });
+    logger.error('database', 'Erro ao buscar sessão ativa global', { error: String(error) });
     return null;
   }
 }
 
-/**
- * Busca todas as sessões de hoje
- */
 export async function getSessoesHoje(userId: string): Promise<SessaoComputada[]> {
   try {
-    const hoje = new Date().toISOString().split('T')[0];
-    const rows = db.getAllSync<RegistroDB>(
-      `SELECT * FROM registros WHERE user_id = ? AND entrada LIKE ? ORDER BY entrada DESC`,
-      [userId, `${hoje}%`]
+    const hoje = new Date();
+    hoje.setHours(0, 0, 0, 0);
+    const amanha = new Date(hoje);
+    amanha.setDate(amanha.getDate() + 1);
+
+    const sessoes = db.getAllSync<RegistroDB>(
+      `SELECT * FROM registros WHERE user_id = ? AND entrada >= ? AND entrada < ? ORDER BY entrada DESC`,
+      [userId, hoje.toISOString(), amanha.toISOString()]
     );
 
-    return rows.map(r => ({
-      ...r,
-      status: r.saida ? 'finalizada' : 'ativa',
-      duracao_minutos: calcularDuracao(r.entrada, r.saida)
-    }));
+    return sessoes.map(s => ({
+      ...s,
+      status: s.saida ? 'finalizada' : 'ativa',
+      duracao_minutos: calcularDuracao(s.entrada, s.saida),
+    })) as SessaoComputada[];
   } catch (error) {
     logger.error('database', 'Erro ao buscar sessões de hoje', { error: String(error) });
     return [];
   }
 }
 
-/**
- * Busca sessões por período
- */
 export async function getSessoesPorPeriodo(
   userId: string,
   dataInicio: string,
   dataFim: string
 ): Promise<SessaoComputada[]> {
   try {
-    const rows = db.getAllSync<RegistroDB>(
-      `SELECT * FROM registros WHERE user_id = ? AND entrada >= ? AND entrada <= ? ORDER BY entrada DESC`,
+    const sessoes = db.getAllSync<RegistroDB>(
+      `SELECT * FROM registros WHERE user_id = ? AND entrada >= ? AND entrada <= ? ORDER BY entrada ASC`,
       [userId, dataInicio, dataFim]
     );
 
-    return rows.map(r => ({
-      ...r,
-      status: r.saida ? 'finalizada' : 'ativa',
-      duracao_minutos: calcularDuracao(r.entrada, r.saida)
-    }));
+    return sessoes.map(s => ({
+      ...s,
+      status: s.saida ? 'finalizada' : 'ativa',
+      duracao_minutos: calcularDuracao(s.entrada, s.saida),
+    })) as SessaoComputada[];
   } catch (error) {
     logger.error('database', 'Erro ao buscar sessões por período', { error: String(error) });
     return [];
   }
 }
 
-/**
- * Calcula estatísticas do dia
- */
 export async function getEstatisticasHoje(userId: string): Promise<EstatisticasDia> {
   try {
     const sessoes = await getSessoesHoje(userId);
-    const finalizadas = sessoes.filter(s => s.saida !== null);
-    const totalMinutos = finalizadas.reduce((acc, s) => acc + s.duracao_minutos, 0);
+    const finalizadas = sessoes.filter(s => s.saida);
+    
+    // Calcula total considerando pausas
+    let totalMinutos = 0;
+    for (const s of finalizadas) {
+      const duracao = calcularDuracao(s.entrada, s.saida);
+      const pausa = s.pausa_minutos || 0;
+      totalMinutos += Math.max(0, duracao - pausa);
+    }
 
     return {
       total_minutos: totalMinutos,
-      total_sessoes: finalizadas.length
+      total_sessoes: finalizadas.length,
     };
   } catch (error) {
     logger.error('database', 'Erro ao calcular estatísticas', { error: String(error) });
@@ -783,42 +695,33 @@ export async function getEstatisticasHoje(userId: string): Promise<EstatisticasD
 }
 
 // ============================================
-// SYNC - Operações para sincronização
+// SYNC - Funções para sincronização
 // ============================================
 
-/**
- * Retorna locais pendentes de sync (synced_at = NULL)
- */
-export async function getLocaisPendentesSync(userId: string): Promise<LocalDB[]> {
+export async function getLocaisParaSync(userId: string): Promise<LocalDB[]> {
   try {
     return db.getAllSync<LocalDB>(
       `SELECT * FROM locais WHERE user_id = ? AND synced_at IS NULL`,
       [userId]
     );
   } catch (error) {
-    logger.error('database', 'Erro ao buscar locais pendentes', { error: String(error) });
+    logger.error('database', 'Erro ao buscar locais para sync', { error: String(error) });
     return [];
   }
 }
 
-/**
- * Retorna registros pendentes de sync
- */
-export async function getRegistrosPendentesSync(userId: string): Promise<RegistroDB[]> {
+export async function getRegistrosParaSync(userId: string): Promise<RegistroDB[]> {
   try {
     return db.getAllSync<RegistroDB>(
       `SELECT * FROM registros WHERE user_id = ? AND synced_at IS NULL`,
       [userId]
     );
   } catch (error) {
-    logger.error('database', 'Erro ao buscar registros pendentes', { error: String(error) });
+    logger.error('database', 'Erro ao buscar registros para sync', { error: String(error) });
     return [];
   }
 }
 
-/**
- * Marca local como sincronizado
- */
 export async function marcarLocalSincronizado(id: string): Promise<void> {
   try {
     db.runSync(
@@ -830,9 +733,6 @@ export async function marcarLocalSincronizado(id: string): Promise<void> {
   }
 }
 
-/**
- * Marca registro como sincronizado
- */
 export async function marcarRegistroSincronizado(id: string): Promise<void> {
   try {
     db.runSync(
@@ -849,10 +749,13 @@ export async function marcarRegistroSincronizado(id: string): Promise<void> {
  */
 export async function upsertLocalFromSync(local: LocalDB): Promise<void> {
   try {
-    const existente = await getLocalById(local.id);
+    const existente = db.getFirstSync<LocalDB>(
+      `SELECT * FROM locais WHERE id = ?`,
+      [local.id]
+    );
 
     if (existente) {
-      // Só atualiza se o remoto for mais recente
+      // Só atualiza se a versão do servidor é mais recente
       if (new Date(local.updated_at) > new Date(existente.updated_at)) {
         db.runSync(
           `UPDATE locais SET nome = ?, latitude = ?, longitude = ?, raio = ?, cor = ?, status = ?, 
@@ -891,17 +794,17 @@ export async function upsertRegistroFromSync(registro: RegistroDB): Promise<void
     if (existente) {
       // Atualiza se mudou
       db.runSync(
-        `UPDATE registros SET saida = ?, editado_manualmente = ?, motivo_edicao = ?, synced_at = ? WHERE id = ?`,
-        [registro.saida, registro.editado_manualmente, registro.motivo_edicao, now(), registro.id]
+        `UPDATE registros SET saida = ?, editado_manualmente = ?, motivo_edicao = ?, pausa_minutos = ?, synced_at = ? WHERE id = ?`,
+        [registro.saida, registro.editado_manualmente, registro.motivo_edicao, registro.pausa_minutos || 0, now(), registro.id]
       );
     } else {
       db.runSync(
         `INSERT INTO registros (id, user_id, local_id, local_nome, entrada, saida, tipo, 
-         editado_manualmente, motivo_edicao, cor, device_id, created_at, synced_at)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+         editado_manualmente, motivo_edicao, cor, device_id, pausa_minutos, created_at, synced_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
         [registro.id, registro.user_id, registro.local_id, registro.local_nome, registro.entrada,
          registro.saida, registro.tipo, registro.editado_manualmente, registro.motivo_edicao,
-         registro.cor, registro.device_id, registro.created_at, now()]
+         registro.cor, registro.device_id, registro.pausa_minutos || 0, registro.created_at, now()]
       );
     }
   } catch (error) {

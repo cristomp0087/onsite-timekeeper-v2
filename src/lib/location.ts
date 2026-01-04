@@ -333,8 +333,8 @@ export async function iniciarBackgroundLocation(): Promise<boolean> {
       showsBackgroundLocationIndicator: true,
       foregroundService: {
         notificationTitle: 'OnSite Timekeeper',
-        notificationBody: 'Monitorando sua localização',
-        notificationColor: ONSITE_AMBER, // Cor OnSite Amber
+        notificationBody: 'Marcando horas de trabalho',
+        notificationColor: #868584ff, // Cor OnSite Amber
       },
     });
 
