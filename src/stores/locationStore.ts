@@ -5,6 +5,7 @@
  * - Locais de trabalho (CRUD)
  * - Localização atual do usuário
  * - Geofencing (monitoramento de entrada/saída)
+ * - Heartbeat (verificação periódica)
  * - Polling de backup
  */
 
@@ -33,9 +34,19 @@ import {
   deletarLocal,
   atualizarLocal,
   initDatabase,
+  registrarHeartbeat,
   type LocalDB,
 } from '../lib/database';
-import { setGeofenceCallback, type GeofenceEvent } from '../lib/backgroundTasks';
+import {
+  setGeofenceCallback,
+  setHeartbeatCallback,
+  updateActiveFences,
+  startHeartbeat,
+  stopHeartbeat,
+  type GeofenceEvent,
+  type HeartbeatResult,
+  type ActiveFence,
+} from '../lib/backgroundTasks';
 import { useWorkSessionStore } from './workSessionStore';
 import { useAuthStore } from './authStore';
 
@@ -79,6 +90,10 @@ interface LocationState {
   isPollingAtivo: boolean;
   isWatching: boolean;
   
+  // Heartbeat
+  lastHeartbeat: HeartbeatResult | null;
+  isHeartbeatAtivo: boolean;
+  
   // Controle de processamento
   isProcessandoEvento: boolean;
   ultimoEvento: GeofenceEvent | null;
@@ -102,6 +117,9 @@ interface LocationState {
   iniciarMonitoramento: () => Promise<void>;
   pararMonitoramento: () => Promise<void>;
   verificarGeofenceAtual: () => void;
+  
+  // Heartbeat
+  atualizarFencesHeartbeat: () => void;
   
   // Polling
   iniciarPolling: () => void;
@@ -129,6 +147,8 @@ export const useLocationStore = create<LocationState>((set, get) => ({
   isBackgroundAtivo: false,
   isPollingAtivo: false,
   isWatching: false,
+  lastHeartbeat: null,
+  isHeartbeatAtivo: false,
   isProcessandoEvento: false,
   ultimoEvento: null,
   isInicializado: false,
@@ -149,7 +169,9 @@ export const useLocationStore = create<LocationState>((set, get) => ({
       const permissoes = await verificarPermissoes();
       set({ permissoes });
 
-      // Configura callback de geofence nativo
+      // ============================================
+      // CALLBACK DE GEOFENCE NATIVO
+      // ============================================
       setGeofenceCallback((evento) => {
         const { isProcessandoEvento } = get();
 
@@ -166,6 +188,80 @@ export const useLocationStore = create<LocationState>((set, get) => ({
 
         // Libera processamento após 1s
         setTimeout(() => set({ isProcessandoEvento: false }), 1000);
+      });
+
+      // ============================================
+      // CALLBACK DE HEARTBEAT (SAFETY NET)
+      // ============================================
+      setHeartbeatCallback(async (result: HeartbeatResult) => {
+        logger.info('heartbeat', '💓 Processando heartbeat', {
+          inside: result.isInsideFence,
+          fence: result.fenceName,
+        });
+
+        set({ lastHeartbeat: result });
+
+        const userId = useAuthStore.getState().getUserId();
+        
+        // Importa registroStore dinamicamente para evitar circular dependency
+        const { useRegistroStore } = await import('./registroStore');
+        const registroStore = useRegistroStore.getState();
+        const sessaoAtual = registroStore.sessaoAtual;
+
+        // 1. Registrar heartbeat no banco
+        if (userId && result.location) {
+          try {
+            await registrarHeartbeat(
+              userId,
+              result.location.latitude,
+              result.location.longitude,
+              result.location.accuracy,
+              result.isInsideFence,
+              result.fenceId,
+              result.fenceName,
+              sessaoAtual?.id || null,
+              result.batteryLevel
+            );
+          } catch (error) {
+            logger.error('heartbeat', 'Erro ao registrar heartbeat', { error: String(error) });
+          }
+        }
+
+        // 2. Verificar inconsistências
+
+        // Caso A: Tem sessão ativa mas está FORA da fence → saída perdida!
+        if (sessaoAtual && sessaoAtual.status === 'ativa' && !result.isInsideFence) {
+          logger.warn('heartbeat', '⚠️ SAÍDA DETECTADA POR HEARTBEAT!', {
+            sessaoId: sessaoAtual.id,
+            localNome: sessaoAtual.local_nome,
+          });
+
+          // Encerrar sessão automaticamente
+          try {
+            await registroStore.registrarSaida(sessaoAtual.local_id);
+            logger.info('heartbeat', '✅ Sessão encerrada por heartbeat');
+            
+            // Atualiza geofenceAtivo
+            set({ geofenceAtivo: null });
+          } catch (error) {
+            logger.error('heartbeat', 'Erro ao encerrar sessão por heartbeat', { error: String(error) });
+          }
+        }
+
+        // Caso B: Sem sessão ativa mas DENTRO de fence → entrada perdida?
+        // Por segurança, NÃO registramos automaticamente - só logamos
+        if (!sessaoAtual && result.isInsideFence && result.fenceId) {
+          logger.warn('heartbeat', '⚠️ POSSÍVEL ENTRADA PERDIDA', {
+            fenceId: result.fenceId,
+            fenceName: result.fenceName,
+          });
+          
+          // Atualiza geofenceAtivo para UI mostrar corretamente
+          set({ geofenceAtivo: result.fenceId });
+          
+          // TODO: Implementar notificação push para o usuário
+          // "Você está em [local]. Deseja iniciar uma sessão?"
+        }
       });
 
       // Carrega locais do banco
@@ -264,6 +360,9 @@ export const useLocationStore = create<LocationState>((set, get) => ({
       await get().iniciarMonitoramento();
     }
 
+    // Atualiza fences no heartbeat
+    get().atualizarFencesHeartbeat();
+
     logger.info('geofence', `✅ Local adicionado: ${local.nome}`, { id });
     return id;
   },
@@ -303,6 +402,9 @@ export const useLocationStore = create<LocationState>((set, get) => ({
       }
     }
 
+    // Atualiza fences no heartbeat
+    get().atualizarFencesHeartbeat();
+
     logger.info('geofence', '✅ Local removido');
   },
 
@@ -321,6 +423,9 @@ export const useLocationStore = create<LocationState>((set, get) => ({
       await get().pararMonitoramento();
       await get().iniciarMonitoramento();
     }
+
+    // Atualiza fences no heartbeat
+    get().atualizarFencesHeartbeat();
 
     logger.info('geofence', '✅ Local editado', { id });
   },
@@ -345,6 +450,10 @@ export const useLocationStore = create<LocationState>((set, get) => ({
       }));
 
       set({ locais });
+      
+      // Atualiza fences no heartbeat
+      get().atualizarFencesHeartbeat();
+      
       logger.debug('gps', `${locais.length} locais carregados`);
     } catch (error) {
       logger.error('gps', 'Erro ao carregar locais', { error: String(error) });
@@ -382,10 +491,25 @@ export const useLocationStore = create<LocationState>((set, get) => ({
       // Inicia polling ativo
       get().iniciarPolling();
 
+      // ============================================
+      // INICIA HEARTBEAT (a cada 15 min)
+      // ============================================
+      const heartbeatStarted = await startHeartbeat();
+      set({ isHeartbeatAtivo: heartbeatStarted });
+      
+      if (heartbeatStarted) {
+        logger.info('heartbeat', '💓 Heartbeat iniciado');
+      } else {
+        logger.warn('heartbeat', '⚠️ Heartbeat não pôde ser iniciado');
+      }
+
+      // Atualiza lista de fences para heartbeat
+      get().atualizarFencesHeartbeat();
+
       // Salva estado
       await AsyncStorage.setItem(STORAGE_KEY_MONITORING, 'true');
 
-      logger.info('geofence', '✅ Monitoramento completo iniciado');
+      logger.info('geofence', '✅ Monitoramento completo iniciado (geofence + heartbeat + polling)');
 
       // Verifica geofence atual
       get().verificarGeofenceAtual();
@@ -396,15 +520,21 @@ export const useLocationStore = create<LocationState>((set, get) => ({
     get().pararPolling();
     await pararGeofencing();
     await pararBackgroundLocation();
+    
+    // ============================================
+    // PARA HEARTBEAT
+    // ============================================
+    await stopHeartbeat();
 
     set({
       isGeofencingAtivo: false,
       isBackgroundAtivo: false,
       isPollingAtivo: false,
+      isHeartbeatAtivo: false,
     });
 
     await AsyncStorage.setItem(STORAGE_KEY_MONITORING, 'false');
-    logger.info('geofence', '⏹️ Monitoramento parado');
+    logger.info('geofence', '⏹️ Monitoramento parado (geofence + heartbeat + polling)');
   },
 
   verificarGeofenceAtual: () => {
@@ -462,6 +592,25 @@ export const useLocationStore = create<LocationState>((set, get) => ({
 
       set({ geofenceAtivo: null });
     }
+  },
+
+  // ============================================
+  // ATUALIZA FENCES NO HEARTBEAT
+  // ============================================
+  atualizarFencesHeartbeat: () => {
+    const { locais } = get();
+    const locaisAtivos = locais.filter(l => l.status === 'active');
+    
+    const fences: ActiveFence[] = locaisAtivos.map(l => ({
+      id: l.id,
+      nome: l.nome,
+      latitude: l.latitude,
+      longitude: l.longitude,
+      radius: l.raio,
+    }));
+
+    updateActiveFences(fences);
+    logger.debug('heartbeat', `Fences atualizadas: ${fences.length}`);
   },
 
   iniciarPolling: () => {

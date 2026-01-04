@@ -80,6 +80,24 @@ export interface EstatisticasDia {
   total_sessoes: number;
 }
 
+// 1. ADICIONAR ESTE TIPO junto com os outros tipos (linha ~70):
+
+export interface HeartbeatLogDB {
+  id: string;
+  user_id: string;
+  timestamp: string;
+  latitude: number;
+  longitude: number;
+  accuracy: number | null;
+  inside_fence: number; // 0 ou 1 (SQLite não tem boolean)
+  fence_id: string | null;
+  fence_name: string | null;
+  sessao_id: string | null;
+  battery_level: number | null;
+  created_at: string;
+}
+
+
 // ============================================
 // INICIALIZAÇÃO
 // ============================================
@@ -149,6 +167,30 @@ export async function initDatabase(): Promise<void> {
         created_at TEXT DEFAULT CURRENT_TIMESTAMP
       )
     `);
+
+     // Tabela de heartbeat logs
+    db.execSync(`
+      CREATE TABLE IF NOT EXISTS heartbeat_log (
+        id TEXT PRIMARY KEY,
+        user_id TEXT NOT NULL,
+        timestamp TEXT NOT NULL,
+        latitude REAL NOT NULL,
+        longitude REAL NOT NULL,
+        accuracy REAL,
+        inside_fence INTEGER DEFAULT 0,
+        fence_id TEXT,
+        fence_name TEXT,
+        sessao_id TEXT,
+        battery_level INTEGER,
+        created_at TEXT DEFAULT CURRENT_TIMESTAMP
+      )
+    `);
+
+     // Índice para heartbeat
+    db.execSync(`CREATE INDEX IF NOT EXISTS idx_heartbeat_user ON heartbeat_log(user_id)`);
+    db.execSync(`CREATE INDEX IF NOT EXISTS idx_heartbeat_timestamp ON heartbeat_log(timestamp)`);
+    db.execSync(`CREATE INDEX IF NOT EXISTS idx_heartbeat_sessao ON heartbeat_log(sessao_id)`);
+
 
     // Índices para performance
     db.execSync(`CREATE INDEX IF NOT EXISTS idx_locais_user ON locais(user_id)`);
@@ -924,5 +966,149 @@ export async function resetDatabase(): Promise<void> {
   } catch (error) {
     logger.error('database', 'Erro ao resetar database', { error: String(error) });
     throw error;
+  }
+}
+
+/**
+ * Registra um heartbeat
+ */
+export async function registrarHeartbeat(
+  userId: string,
+  latitude: number,
+  longitude: number,
+  accuracy: number | null,
+  insideFence: boolean,
+  fenceId: string | null,
+  fenceName: string | null,
+  sessaoId: string | null,
+  batteryLevel: number | null
+): Promise<string> {
+  const id = generateUUID();
+  const timestamp = now();
+  
+  try {
+    db.runSync(
+      `INSERT INTO heartbeat_log (id, user_id, timestamp, latitude, longitude, accuracy, 
+       inside_fence, fence_id, fence_name, sessao_id, battery_level, created_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      [id, userId, timestamp, latitude, longitude, accuracy, 
+       insideFence ? 1 : 0, fenceId, fenceName, sessaoId, batteryLevel, timestamp]
+    );
+    
+    logger.debug('heartbeat', 'Heartbeat registrado', { id, insideFence, fenceId });
+    return id;
+  } catch (error) {
+    logger.error('database', 'Erro ao registrar heartbeat', { error: String(error) });
+    throw error;
+  }
+}
+
+/**
+ * Busca último heartbeat de uma sessão
+ */
+export async function getUltimoHeartbeatSessao(sessaoId: string): Promise<HeartbeatLogDB | null> {
+  try {
+    return db.getFirstSync<HeartbeatLogDB>(
+      `SELECT * FROM heartbeat_log WHERE sessao_id = ? ORDER BY timestamp DESC LIMIT 1`,
+      [sessaoId]
+    );
+  } catch (error) {
+    logger.error('database', 'Erro ao buscar último heartbeat', { error: String(error) });
+    return null;
+  }
+}
+
+/**
+ * Busca último heartbeat do usuário (qualquer sessão)
+ */
+export async function getUltimoHeartbeat(userId: string): Promise<HeartbeatLogDB | null> {
+  try {
+    return db.getFirstSync<HeartbeatLogDB>(
+      `SELECT * FROM heartbeat_log WHERE user_id = ? ORDER BY timestamp DESC LIMIT 1`,
+      [userId]
+    );
+  } catch (error) {
+    logger.error('database', 'Erro ao buscar último heartbeat', { error: String(error) });
+    return null;
+  }
+}
+
+/**
+ * Busca heartbeats por período
+ */
+export async function getHeartbeatsPorPeriodo(
+  userId: string,
+  dataInicio: string,
+  dataFim: string
+): Promise<HeartbeatLogDB[]> {
+  try {
+    return db.getAllSync<HeartbeatLogDB>(
+      `SELECT * FROM heartbeat_log WHERE user_id = ? AND timestamp >= ? AND timestamp <= ? ORDER BY timestamp DESC`,
+      [userId, dataInicio, dataFim]
+    );
+  } catch (error) {
+    logger.error('database', 'Erro ao buscar heartbeats', { error: String(error) });
+    return [];
+  }
+}
+
+/**
+ * Limpa heartbeats antigos (mais de X dias)
+ */
+export async function limparHeartbeatsAntigos(diasManter: number = 30): Promise<number> {
+  try {
+    const cutoff = new Date();
+    cutoff.setDate(cutoff.getDate() - diasManter);
+    
+    const result = db.runSync(
+      `DELETE FROM heartbeat_log WHERE timestamp < ?`,
+      [cutoff.toISOString()]
+    );
+    
+    const deletados = result.changes || 0;
+    if (deletados > 0) {
+      logger.info('database', `Heartbeats antigos limpos: ${deletados}`);
+    }
+    return deletados;
+  } catch (error) {
+    logger.error('database', 'Erro ao limpar heartbeats', { error: String(error) });
+    return 0;
+  }
+}
+
+/**
+ * Conta heartbeats (para stats)
+ */
+export async function getHeartbeatStats(userId: string): Promise<{
+  total: number;
+  hoje: number;
+  ultimoTimestamp: string | null;
+}> {
+  try {
+    const hoje = new Date().toISOString().split('T')[0];
+    
+    const total = db.getFirstSync<{ count: number }>(
+      `SELECT COUNT(*) as count FROM heartbeat_log WHERE user_id = ?`,
+      [userId]
+    );
+    
+    const hojeCount = db.getFirstSync<{ count: number }>(
+      `SELECT COUNT(*) as count FROM heartbeat_log WHERE user_id = ? AND timestamp LIKE ?`,
+      [userId, `${hoje}%`]
+    );
+    
+    const ultimo = db.getFirstSync<{ timestamp: string }>(
+      `SELECT timestamp FROM heartbeat_log WHERE user_id = ? ORDER BY timestamp DESC LIMIT 1`,
+      [userId]
+    );
+    
+    return {
+      total: total?.count || 0,
+      hoje: hojeCount?.count || 0,
+      ultimoTimestamp: ultimo?.timestamp || null,
+    };
+  } catch (error) {
+    logger.error('database', 'Erro ao obter stats de heartbeat', { error: String(error) });
+    return { total: 0, hoje: 0, ultimoTimestamp: null };
   }
 }

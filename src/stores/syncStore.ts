@@ -1,11 +1,7 @@
 /**
  * Sync Store - OnSite Timekeeper
  * 
- * Gerencia sincronização bidirecional:
- * - SQLite → Supabase (upload)
- * - Supabase → SQLite (download)
- * - Auto-sync a cada 5 minutos
- * - Boot reconciliation
+ * CORRIGIDO: isOnline agora funciona corretamente
  */
 
 import { create } from 'zustand';
@@ -28,23 +24,13 @@ import {
 import { useAuthStore } from './authStore';
 import { useLocationStore } from './locationStore';
 
-// ============================================
-// CONSTANTES
-// ============================================
-
 const SYNC_INTERVAL = 5 * 60 * 1000; // 5 minutos
-
-// ============================================
-// TIPOS
-// ============================================
 
 interface SyncState {
   isSyncing: boolean;
   lastSyncAt: Date | null;
   isOnline: boolean;
   autoSyncEnabled: boolean;
-  
-  // Estatísticas do último sync
   lastSyncStats: {
     uploadedLocais: number;
     uploadedRegistros: number;
@@ -53,59 +39,48 @@ interface SyncState {
     errors: string[];
   } | null;
 
-  // Actions
   initialize: () => Promise<() => void>;
   syncNow: () => Promise<void>;
   forceFullSync: () => Promise<void>;
   debugSync: () => Promise<{ success: boolean; error?: string; stats?: any }>;
   toggleAutoSync: () => void;
-  
-  // Sync parciais
   syncLocais: () => Promise<void>;
   syncRegistros: () => Promise<void>;
-  
-  // Boot reconciliation
   reconciliarNoBoot: () => Promise<void>;
 }
-
-// ============================================
-// TIMER
-// ============================================
 
 let syncInterval: NodeJS.Timeout | null = null;
 let netInfoUnsubscribe: (() => void) | null = null;
 
-// ============================================
-// STORE
-// ============================================
-
 export const useSyncStore = create<SyncState>((set, get) => ({
   isSyncing: false,
   lastSyncAt: null,
-  isOnline: false,
+  isOnline: true,  // ✅ CORRIGIDO: Começa TRUE, assume online
   autoSyncEnabled: true,
   lastSyncStats: null,
 
   initialize: async () => {
     logger.info('boot', '🔄 Inicializando sync store...');
 
-    // Monitora conexão
+    // ✅ CORRIGIDO: Listener simplificado - confia no isConnected
     netInfoUnsubscribe = NetInfo.addEventListener((state) => {
-      // isInternetReachable pode ser null no início, assumir online se connected
-      const online = state.isConnected === true && (state.isInternetReachable !== false);
-      logger.debug('sync', `NetInfo: connected=${state.isConnected}, reachable=${state.isInternetReachable}, online=${online}`);
+      // Se está conectado, está online. Simples.
+      const online = !!state.isConnected;
+      
+      logger.info('sync', `📶 NetInfo: connected=${state.isConnected}, online=${online}`);
       set({ isOnline: online });
 
+      // Se ficou online e auto-sync está ativo, sincroniza
       if (online && get().autoSyncEnabled && !get().isSyncing) {
-        logger.info('sync', '📶 Online - iniciando sync');
         get().syncNow();
       }
     });
 
-    // Verifica conexão inicial
+    // ✅ CORRIGIDO: Verificação inicial simplificada
     const state = await NetInfo.fetch();
-    const online = state.isConnected === true && (state.isInternetReachable !== false);
-    logger.info('sync', `Conexão inicial: connected=${state.isConnected}, reachable=${state.isInternetReachable}, online=${online}`);
+    const online = !!state.isConnected;
+    
+    logger.info('sync', `📶 Conexão inicial: connected=${state.isConnected}, online=${online}`);
     set({ isOnline: online });
 
     // Auto-sync a cada 5 minutos
@@ -117,18 +92,18 @@ export const useSyncStore = create<SyncState>((set, get) => ({
       }
     }, SYNC_INTERVAL);
 
-    // Sync inicial se online e Supabase configurado
-    if (online && isSupabaseConfigured()) {
-      logger.info('sync', 'Iniciando sync de boot...');
-      await get().reconciliarNoBoot();
-      await get().syncNow();
-    } else {
-      logger.warn('sync', `Sync de boot pulado: online=${online}, supabaseConfigured=${isSupabaseConfigured()}`);
+    // Sync inicial
+    if (isSupabaseConfigured()) {
+      logger.info('sync', '🚀 Iniciando sync de boot...');
+      try {
+        await get().syncNow();
+      } catch (error) {
+        logger.error('sync', 'Erro no sync de boot', { error: String(error) });
+      }
     }
 
-    logger.info('boot', '✅ Sync store inicializado', { online, supabaseConfigured: isSupabaseConfigured() });
+    logger.info('boot', '✅ Sync store inicializado', { online });
 
-    // Retorna cleanup function
     return () => {
       if (netInfoUnsubscribe) netInfoUnsubscribe();
       if (syncInterval) clearInterval(syncInterval);
@@ -136,20 +111,22 @@ export const useSyncStore = create<SyncState>((set, get) => ({
   },
 
   syncNow: async () => {
-    const { isSyncing, isOnline } = get();
+    const { isSyncing } = get();
     
     if (isSyncing) {
       logger.warn('sync', 'Sync já em andamento');
       return;
     }
 
-    if (!isOnline) {
-      logger.warn('sync', 'Offline - sync ignorado');
+    // ✅ CORRIGIDO: Não verifica isOnline aqui - tenta sincronizar sempre
+    if (!isSupabaseConfigured()) {
+      logger.warn('sync', '⚠️ Supabase não configurado');
       return;
     }
 
-    if (!isSupabaseConfigured()) {
-      logger.warn('sync', 'Supabase não configurado');
+    const userId = useAuthStore.getState().getUserId();
+    if (!userId) {
+      logger.warn('sync', '⚠️ Usuário não autenticado');
       return;
     }
 
@@ -167,31 +144,33 @@ export const useSyncStore = create<SyncState>((set, get) => ({
       };
 
       // 1. Upload locais
-      const locaisUploaded = await uploadLocais();
-      stats.uploadedLocais = locaisUploaded.count;
-      stats.errors.push(...locaisUploaded.errors);
+      const locaisUp = await uploadLocais(userId);
+      stats.uploadedLocais = locaisUp.count;
+      stats.errors.push(...locaisUp.errors);
 
       // 2. Upload registros
-      const registrosUploaded = await uploadRegistros();
-      stats.uploadedRegistros = registrosUploaded.count;
-      stats.errors.push(...registrosUploaded.errors);
+      const registrosUp = await uploadRegistros(userId);
+      stats.uploadedRegistros = registrosUp.count;
+      stats.errors.push(...registrosUp.errors);
 
       // 3. Download locais
-      const locaisDownloaded = await downloadLocais();
-      stats.downloadedLocais = locaisDownloaded.count;
-      stats.errors.push(...locaisDownloaded.errors);
+      const locaisDown = await downloadLocais(userId);
+      stats.downloadedLocais = locaisDown.count;
+      stats.errors.push(...locaisDown.errors);
 
       // 4. Download registros
-      const registrosDownloaded = await downloadRegistros();
-      stats.downloadedRegistros = registrosDownloaded.count;
-      stats.errors.push(...registrosDownloaded.errors);
+      const registrosDown = await downloadRegistros(userId);
+      stats.downloadedRegistros = registrosDown.count;
+      stats.errors.push(...registrosDown.errors);
 
-      // 5. Purge de locais deletados antigos
+      // 5. Purge
       await purgeLocaisDeletados(7);
 
+      // ✅ Se chegou aqui sem erro, está online!
       set({ 
         lastSyncAt: new Date(),
         lastSyncStats: stats,
+        isOnline: true,
       });
 
       logger.info('sync', '✅ Sync concluído', {
@@ -200,158 +179,84 @@ export const useSyncStore = create<SyncState>((set, get) => ({
         errors: stats.errors.length,
       });
 
-      // Recarrega locais no locationStore
+      // Recarrega locais
       await useLocationStore.getState().recarregarLocais();
 
     } catch (error) {
-      logger.error('sync', 'Erro no sync', { error: String(error) });
+      logger.error('sync', '❌ Erro no sync', { error: String(error) });
+      set({ 
+        lastSyncStats: {
+          uploadedLocais: 0,
+          uploadedRegistros: 0,
+          downloadedLocais: 0,
+          downloadedRegistros: 0,
+          errors: [String(error)],
+        }
+      });
     } finally {
       set({ isSyncing: false });
     }
   },
 
   forceFullSync: async () => {
-    logger.info('sync', '🔄 Forçando sync completo...');
-    await get().reconciliarNoBoot();
+    logger.info('sync', '🔄 Forçando sync...');
+    set({ isSyncing: false, isOnline: true }); // ✅ Força online
     await get().syncNow();
   },
 
-  // Debug: força sync ignorando verificações de online/supabase
   debugSync: async () => {
-    logger.info('sync', '🔧 DEBUG SYNC - ignorando verificações...');
+    const netState = await NetInfo.fetch();
+    const userId = useAuthStore.getState().getUserId();
     
-    const supabaseOk = isSupabaseConfigured();
-    logger.info('sync', `Supabase configurado: ${supabaseOk}`);
-    
-    if (!supabaseOk) {
-      logger.error('sync', 'Supabase NÃO está configurado! Verifique .env');
-      return { success: false, error: 'Supabase não configurado' };
-    }
-
-    set({ isSyncing: true, lastSyncStats: null });
-
-    try {
-      const stats = {
-        uploadedLocais: 0,
-        uploadedRegistros: 0,
-        downloadedLocais: 0,
-        downloadedRegistros: 0,
-        errors: [] as string[],
-      };
-
-      // 1. Upload locais
-      logger.info('sync', '📤 Uploading locais...');
-      const locaisUploaded = await uploadLocais();
-      stats.uploadedLocais = locaisUploaded.count;
-      stats.errors.push(...locaisUploaded.errors);
-      logger.info('sync', `Locais uploaded: ${locaisUploaded.count}, errors: ${locaisUploaded.errors.length}`);
-
-      // 2. Upload registros
-      logger.info('sync', '📤 Uploading registros...');
-      const registrosUploaded = await uploadRegistros();
-      stats.uploadedRegistros = registrosUploaded.count;
-      stats.errors.push(...registrosUploaded.errors);
-      logger.info('sync', `Registros uploaded: ${registrosUploaded.count}, errors: ${registrosUploaded.errors.length}`);
-
-      // 3. Download locais
-      logger.info('sync', '📥 Downloading locais...');
-      const locaisDownloaded = await downloadLocais();
-      stats.downloadedLocais = locaisDownloaded.count;
-      stats.errors.push(...locaisDownloaded.errors);
-
-      // 4. Download registros
-      logger.info('sync', '📥 Downloading registros...');
-      const registrosDownloaded = await downloadRegistros();
-      stats.downloadedRegistros = registrosDownloaded.count;
-      stats.errors.push(...registrosDownloaded.errors);
-
-      set({ 
-        lastSyncAt: new Date(),
-        lastSyncStats: stats,
-        isOnline: true, // Forçar online já que conseguiu sincronizar
-      });
-
-      logger.info('sync', '✅ DEBUG SYNC concluído', stats);
-
-      // Recarrega locais
-      await useLocationStore.getState().recarregarLocais();
-
-      return { success: true, stats };
-    } catch (error) {
-      logger.error('sync', 'Erro no debug sync', { error: String(error) });
-      return { success: false, error: String(error) };
-    } finally {
-      set({ isSyncing: false });
-    }
+    return {
+      success: true,
+      stats: {
+        network: {
+          isConnected: netState.isConnected,
+          isInternetReachable: netState.isInternetReachable,
+        },
+        store: {
+          isOnline: get().isOnline,
+          isSyncing: get().isSyncing,
+          lastSyncAt: get().lastSyncAt?.toISOString() || null,
+        },
+        supabase: {
+          isConfigured: isSupabaseConfigured(),
+        },
+        auth: {
+          userId: userId || 'NOT AUTHENTICATED',
+        },
+      },
+    };
   },
 
   toggleAutoSync: () => {
-    set(state => {
-      const newValue = !state.autoSyncEnabled;
-      logger.info('sync', `Auto-sync: ${newValue ? 'ON' : 'OFF'}`);
-      return { autoSyncEnabled: newValue };
-    });
+    const newValue = !get().autoSyncEnabled;
+    set({ autoSyncEnabled: newValue });
+    logger.info('sync', `Auto-sync ${newValue ? 'ativado' : 'desativado'}`);
   },
 
   syncLocais: async () => {
-    await uploadLocais();
-    await downloadLocais();
+    const userId = useAuthStore.getState().getUserId();
+    if (!userId) return;
+    await uploadLocais(userId);
+    await downloadLocais(userId);
     await useLocationStore.getState().recarregarLocais();
   },
 
   syncRegistros: async () => {
-    await uploadRegistros();
-    await downloadRegistros();
+    const userId = useAuthStore.getState().getUserId();
+    if (!userId) return;
+    await uploadRegistros(userId);
+    await downloadRegistros(userId);
   },
 
   reconciliarNoBoot: async () => {
     const userId = useAuthStore.getState().getUserId();
     if (!userId) return;
-
-    logger.info('sync', '🔧 Reconciliação de boot...');
-
-    try {
-      const locaisLocais = await getTodosLocais(userId);
-      
-      const { data: locaisRemoto, error } = await supabase
-        .from('locais')
-        .select('*')
-        .eq('user_id', userId);
-
-      if (error) {
-        logger.error('sync', 'Erro ao buscar locais remotos', { error: error.message });
-        return;
-      }
-
-      const locaisRemotoMap = new Map((locaisRemoto || []).map(l => [l.id, l]));
-      const locaisLocalMap = new Map(locaisLocais.map(l => [l.id, l]));
-
-      // Locais no servidor mas não local → inserir local
-      for (const [id, remoto] of locaisRemotoMap) {
-        if (!locaisLocalMap.has(id)) {
-          logger.debug('sync', `Inserindo local do servidor: ${remoto.nome}`);
-          await upsertLocalFromSync(remoto);
-        }
-      }
-
-      // Locais em ambos com timestamps diferentes → usar mais recente
-      for (const [id, local] of locaisLocalMap) {
-        const remoto = locaisRemotoMap.get(id);
-        if (remoto && local.status === 'active') {
-          const localTime = new Date(local.updated_at).getTime();
-          const remotoTime = new Date(remoto.updated_at).getTime();
-
-          if (remotoTime > localTime) {
-            logger.debug('sync', `Atualizando local do servidor (mais recente): ${remoto.nome}`);
-            await upsertLocalFromSync(remoto);
-          }
-        }
-      }
-
-      logger.info('sync', '✅ Reconciliação concluída');
-    } catch (error) {
-      logger.error('sync', 'Erro na reconciliação', { error: String(error) });
-    }
+    await downloadLocais(userId);
+    await downloadRegistros(userId);
+    await useLocationStore.getState().recarregarLocais();
   },
 }));
 
@@ -359,93 +264,98 @@ export const useSyncStore = create<SyncState>((set, get) => ({
 // FUNÇÕES DE UPLOAD/DOWNLOAD
 // ============================================
 
-async function uploadLocais(): Promise<{ count: number; errors: string[] }> {
-  const userId = useAuthStore.getState().getUserId();
-  if (!userId) return { count: 0, errors: ['Usuário não autenticado'] };
-
-  const errors: string[] = [];
+async function uploadLocais(userId: string): Promise<{ count: number; errors: string[] }> {
   let count = 0;
+  const errors: string[] = [];
 
   try {
-    const pendentes = await getLocaisPendentesSync(userId);
-    
-    for (const local of pendentes) {
-      const { error } = await supabase.from('locais').upsert({
-        id: local.id,
-        user_id: userId,
-        nome: local.nome,
-        latitude: local.latitude,
-        longitude: local.longitude,
-        raio: local.raio,
-        cor: local.cor,
-        status: local.status,
-        deleted_at: local.deleted_at,
-        created_at: local.created_at,
-        updated_at: local.updated_at,
-      });
+    const locais = await getLocaisPendentesSync(userId);
+    logger.info('sync', `📤 ${locais.length} locais pendentes`);
 
-      if (error) {
-        errors.push(`Local ${local.nome}: ${error.message}`);
-        await registrarSyncLog(userId, 'local', local.id, 'sync_up', local, null, 'failed', error.message);
-      } else {
-        await marcarLocalSincronizado(local.id);
-        await registrarSyncLog(userId, 'local', local.id, 'sync_up', null, local, 'synced');
-        count++;
+    for (const local of locais) {
+      try {
+        const { error } = await supabase.from('locais').upsert({
+          id: local.id,
+          user_id: local.user_id,
+          nome: local.nome,
+          latitude: local.latitude,
+          longitude: local.longitude,
+          raio: local.raio,
+          cor: local.cor,
+          status: local.status,
+          deleted_at: local.deleted_at,
+          last_seen_at: local.last_seen_at,
+          created_at: local.created_at,
+          updated_at: local.updated_at,
+        });
+
+        if (error) {
+          errors.push(`${local.nome}: ${error.message}`);
+          logger.error('sync', `❌ Upload local falhou: ${local.nome}`, { error: error.message });
+        } else {
+          await marcarLocalSincronizado(local.id);
+          count++;
+          logger.info('sync', `✅ Local uploaded: ${local.nome}`);
+        }
+      } catch (e) {
+        errors.push(`${local.nome}: ${e}`);
       }
     }
   } catch (error) {
-    errors.push(`Upload locais: ${String(error)}`);
+    errors.push(String(error));
   }
 
   return { count, errors };
 }
 
-async function uploadRegistros(): Promise<{ count: number; errors: string[] }> {
-  const userId = useAuthStore.getState().getUserId();
-  if (!userId) return { count: 0, errors: ['Usuário não autenticado'] };
-
-  const errors: string[] = [];
+async function uploadRegistros(userId: string): Promise<{ count: number; errors: string[] }> {
   let count = 0;
+  const errors: string[] = [];
 
   try {
-    const pendentes = await getRegistrosPendentesSync(userId);
+    const registros = await getRegistrosPendentesSync(userId);
+    logger.info('sync', `📤 ${registros.length} registros pendentes`);
 
-    for (const registro of pendentes) {
-      const { error } = await supabase.from('registros').upsert({
-        id: registro.id,
-        user_id: userId,
-        local_id: registro.local_id,
-        local_nome: registro.local_nome,
-        entrada: registro.entrada,
-        saida: registro.saida,
-        tipo: registro.tipo,
-        editado_manualmente: registro.editado_manualmente === 1,
-        motivo_edicao: registro.motivo_edicao,
-        created_at: registro.created_at,
-      });
+    for (const reg of registros) {
+      try {
+        const { error } = await supabase.from('registros').upsert({
+          id: reg.id,
+          user_id: reg.user_id,
+          local_id: reg.local_id,
+          local_nome: reg.local_nome,
+          entrada: reg.entrada,
+          saida: reg.saida,
+          tipo: reg.tipo,
+          editado_manualmente: reg.editado_manualmente === 1,
+          motivo_edicao: reg.motivo_edicao,
+          hash_integridade: reg.hash_integridade,
+          cor: reg.cor,
+          device_id: reg.device_id,
+          created_at: reg.created_at,
+        });
 
-      if (error) {
-        errors.push(`Registro ${registro.id}: ${error.message}`);
-        await registrarSyncLog(userId, 'registro', registro.id, 'sync_up', registro, null, 'failed', error.message);
-      } else {
-        await marcarRegistroSincronizado(registro.id);
-        await registrarSyncLog(userId, 'registro', registro.id, 'sync_up', null, registro, 'synced');
-        count++;
+        if (error) {
+          errors.push(`Registro: ${error.message}`);
+          logger.error('sync', `❌ Upload registro falhou`, { error: error.message });
+        } else {
+          await marcarRegistroSincronizado(reg.id);
+          count++;
+          logger.info('sync', `✅ Registro uploaded: ${reg.id}`);
+        }
+      } catch (e) {
+        errors.push(`Registro: ${e}`);
       }
     }
   } catch (error) {
-    errors.push(`Upload registros: ${String(error)}`);
+    errors.push(String(error));
   }
 
   return { count, errors };
 }
 
-async function downloadLocais(): Promise<{ count: number; errors: string[] }> {
-  const userId = useAuthStore.getState().getUserId();
-  if (!userId) return { count: 0, errors: ['Usuário não autenticado'] };
-
-  const errors: string[] = [];
+async function downloadLocais(userId: string): Promise<{ count: number; errors: string[] }> {
   let count = 0;
+  const errors: string[] = [];
 
   try {
     const { data, error } = await supabase
@@ -455,61 +365,61 @@ async function downloadLocais(): Promise<{ count: number; errors: string[] }> {
       .eq('status', 'active');
 
     if (error) {
-      errors.push(`Download locais: ${error.message}`);
+      errors.push(error.message);
       return { count, errors };
     }
 
-    for (const local of data || []) {
+    logger.info('sync', `📥 ${data?.length || 0} locais do Supabase`);
+
+    for (const remote of data || []) {
       try {
-        await upsertLocalFromSync(local as LocalDB);
-        await registrarSyncLog(userId, 'local', local.id, 'sync_down', null, local, 'synced');
+        await upsertLocalFromSync({
+          ...remote,
+          synced_at: new Date().toISOString(),
+        });
         count++;
       } catch (e) {
-        errors.push(`Local ${local.nome}: ${String(e)}`);
+        errors.push(`${remote.nome}: ${e}`);
       }
     }
   } catch (error) {
-    errors.push(`Download locais: ${String(error)}`);
+    errors.push(String(error));
   }
 
   return { count, errors };
 }
 
-async function downloadRegistros(): Promise<{ count: number; errors: string[] }> {
-  const userId = useAuthStore.getState().getUserId();
-  if (!userId) return { count: 0, errors: ['Usuário não autenticado'] };
-
-  const errors: string[] = [];
+async function downloadRegistros(userId: string): Promise<{ count: number; errors: string[] }> {
   let count = 0;
+  const errors: string[] = [];
 
   try {
-    const thirtyDaysAgo = new Date(Date.now() - 30 * 24 * 60 * 60 * 1000).toISOString();
-
     const { data, error } = await supabase
       .from('registros')
       .select('*')
-      .eq('user_id', userId)
-      .gte('entrada', thirtyDaysAgo);
+      .eq('user_id', userId);
 
     if (error) {
-      errors.push(`Download registros: ${error.message}`);
+      errors.push(error.message);
       return { count, errors };
     }
 
-    for (const registro of data || []) {
+    logger.info('sync', `📥 ${data?.length || 0} registros do Supabase`);
+
+    for (const remote of data || []) {
       try {
         await upsertRegistroFromSync({
-          ...registro,
-          editado_manualmente: registro.editado_manualmente ? 1 : 0,
-        } as RegistroDB);
-        await registrarSyncLog(userId, 'registro', registro.id, 'sync_down', null, registro, 'synced');
+          ...remote,
+          editado_manualmente: remote.editado_manualmente ? 1 : 0,
+          synced_at: new Date().toISOString(),
+        });
         count++;
       } catch (e) {
-        errors.push(`Registro ${registro.id}: ${String(e)}`);
+        errors.push(`Registro: ${e}`);
       }
     }
   } catch (error) {
-    errors.push(`Download registros: ${String(error)}`);
+    errors.push(String(error));
   }
 
   return { count, errors };

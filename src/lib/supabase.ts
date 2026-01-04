@@ -7,27 +7,43 @@
 
 import { createClient } from '@supabase/supabase-js';
 import AsyncStorage from '@react-native-async-storage/async-storage';
+import Constants from 'expo-constants';
 import { Platform } from 'react-native';
 
-// Credenciais do Supabase (via env ou fallback para dev)
-const supabaseUrl = process.env.EXPO_PUBLIC_SUPABASE_URL || '';
-const supabaseAnonKey = process.env.EXPO_PUBLIC_SUPABASE_ANON_KEY || '';
+// ============================================
+// CREDENCIAIS - MÚLTIPLAS FONTES
+// ============================================
 
-// Log de debug
+// 1. process.env - funciona no Expo Go com .env
+// 2. Constants.expoConfig.extra - funciona no EAS Build
+const supabaseUrl = process.env.EXPO_PUBLIC_SUPABASE_URL 
+  || Constants.expoConfig?.extra?.EXPO_PUBLIC_SUPABASE_URL 
+  || '';
+
+const supabaseAnonKey = process.env.EXPO_PUBLIC_SUPABASE_ANON_KEY 
+  || Constants.expoConfig?.extra?.EXPO_PUBLIC_SUPABASE_ANON_KEY 
+  || '';
+
+// Log de debug na inicialização
 console.log('🔑 Supabase URL:', supabaseUrl ? `${supabaseUrl.substring(0, 30)}...` : 'NÃO CONFIGURADO');
 console.log('🔑 Supabase Key:', supabaseAnonKey ? `${supabaseAnonKey.substring(0, 20)}...` : 'NÃO CONFIGURADO');
+console.log('📦 Source:', process.env.EXPO_PUBLIC_SUPABASE_URL ? 'process.env' : (Constants.expoConfig?.extra?.EXPO_PUBLIC_SUPABASE_URL ? 'Constants.extra' : 'NONE'));
 
 // Validação em dev
 if (__DEV__ && (!supabaseUrl || !supabaseAnonKey)) {
   console.warn(
     '⚠️ Supabase credentials not configured!\n' +
-    'Create a .env file with:\n' +
+    'For Expo Go: Create a .env file\n' +
+    'For EAS Build: Add to app.json extra\n' +
     'EXPO_PUBLIC_SUPABASE_URL=your_url\n' +
     'EXPO_PUBLIC_SUPABASE_ANON_KEY=your_key'
   );
 }
 
-// Storage que funciona em mobile e web
+// ============================================
+// STORAGE ADAPTER
+// ============================================
+
 const customStorage = Platform.OS === 'web'
   ? {
       getItem: (key: string) => {
@@ -51,7 +67,10 @@ const customStorage = Platform.OS === 'web'
     }
   : AsyncStorage;
 
-// Cliente Supabase
+// ============================================
+// CLIENTE SUPABASE
+// ============================================
+
 export const supabase = createClient(supabaseUrl, supabaseAnonKey, {
   auth: {
     storage: customStorage,
@@ -61,7 +80,36 @@ export const supabase = createClient(supabaseUrl, supabaseAnonKey, {
   },
 });
 
-// Tipos do banco de dados (gerados ou manuais)
+// ============================================
+// HELPERS
+// ============================================
+
+/**
+ * Verifica se Supabase está configurado
+ */
+export function isSupabaseConfigured(): boolean {
+  const configured = Boolean(supabaseUrl && supabaseAnonKey);
+  return configured;
+}
+
+/**
+ * Retorna config do Supabase para debug
+ */
+export function getSupabaseConfig() {
+  return {
+    url: supabaseUrl ? `${supabaseUrl.substring(0, 30)}...` : 'NOT SET',
+    keySet: supabaseAnonKey ? 'YES' : 'NO',
+    source: process.env.EXPO_PUBLIC_SUPABASE_URL 
+      ? 'process.env' 
+      : (Constants.expoConfig?.extra?.EXPO_PUBLIC_SUPABASE_URL ? 'Constants.extra' : 'NONE'),
+    isConfigured: isSupabaseConfigured(),
+  };
+}
+
+// ============================================
+// TIPOS DO BANCO DE DADOS
+// ============================================
+
 export interface Database {
   public: {
     Tables: {
@@ -122,9 +170,4 @@ export interface Database {
       };
     };
   };
-}
-
-// Helper para verificar se Supabase está configurado
-export function isSupabaseConfigured(): boolean {
-  return Boolean(supabaseUrl && supabaseAnonKey);
 }

@@ -5,10 +5,12 @@
  * - Entrada/Saída no SQLite
  * - Estatísticas do dia
  * - Histórico de sessões
+ * - Deletar e editar registros
  */
 
 import { create } from 'zustand';
 import { Share } from 'react-native';
+import * as SQLite from 'expo-sqlite';
 import { logger } from '../lib/logger';
 import {
   initDatabase,
@@ -25,6 +27,9 @@ import {
 import { gerarRelatorioSessao, gerarRelatorioCompleto } from '../lib/reports';
 import { useAuthStore } from './authStore';
 import type { Coordenadas } from '../lib/location';
+
+// DB reference
+const db = SQLite.openDatabaseSync('onsite-timekeeper.db');
 
 // ============================================
 // TIPOS
@@ -76,6 +81,25 @@ interface RegistroState {
   
   // Helpers
   getSessoesPeriodo: (dataInicio: string, dataFim: string) => Promise<SessaoComputada[]>;
+  
+  // CRUD
+  deletarRegistro: (id: string) => Promise<void>;
+  editarRegistro: (id: string, updates: {
+    entrada?: string;
+    saida?: string;
+    editado_manualmente?: number;
+    motivo_edicao?: string;
+    pausa_minutos?: number;
+  }) => Promise<void>;
+  
+  // Entrada manual
+  criarRegistroManual: (params: {
+    localId: string;
+    localNome: string;
+    entrada: string;
+    saida: string;
+    pausaMinutos?: number;
+  }) => Promise<string>;
 }
 
 // ============================================
@@ -321,6 +345,184 @@ export const useRegistroStore = create<RegistroState>((set, get) => ({
     } catch (error) {
       logger.error('database', 'Erro ao buscar sessões por período', { error: String(error) });
       return [];
+    }
+  },
+
+  // ============================================
+  // DELETAR REGISTRO
+  // ============================================
+  deletarRegistro: async (id) => {
+    const userId = useAuthStore.getState().getUserId();
+    if (!userId) {
+      throw new Error('Usuário não autenticado');
+    }
+
+    try {
+      const dbOk = await garantirDbInicializado();
+      if (!dbOk) throw new Error('Banco não disponível');
+
+      // Verifica se o registro existe e pertence ao usuário
+      const registro = db.getFirstSync<{ id: string; saida: string | null }>(
+        `SELECT id, saida FROM registros WHERE id = ? AND user_id = ?`,
+        [id, userId]
+      );
+
+      if (!registro) {
+        throw new Error('Registro não encontrado');
+      }
+
+      // Não permite deletar sessão ativa
+      if (!registro.saida) {
+        throw new Error('Não é possível deletar uma sessão em andamento');
+      }
+
+      // Deleta do SQLite local
+      db.runSync(`DELETE FROM registros WHERE id = ? AND user_id = ?`, [id, userId]);
+      logger.info('registro', `🗑️ Registro deletado localmente: ${id}`);
+
+      // Tenta deletar do Supabase também
+      try {
+        const { supabase } = await import('../lib/supabase');
+        const { error } = await supabase
+          .from('registros')
+          .delete()
+          .eq('id', id)
+          .eq('user_id', userId);
+
+        if (error) {
+          logger.warn('registro', 'Erro ao deletar do Supabase', { error: error.message });
+        } else {
+          logger.info('registro', `🗑️ Registro deletado do Supabase: ${id}`);
+        }
+      } catch (supabaseError) {
+        logger.warn('registro', 'Supabase indisponível para delete', { error: String(supabaseError) });
+      }
+
+      // Recarrega dados
+      await get().recarregarDados();
+    } catch (error) {
+      logger.error('registro', 'Erro ao deletar registro', { error: String(error) });
+      throw error;
+    }
+  },
+
+  // ============================================
+  // EDITAR REGISTRO
+  // ============================================
+  editarRegistro: async (id, updates) => {
+    const userId = useAuthStore.getState().getUserId();
+    if (!userId) {
+      throw new Error('Usuário não autenticado');
+    }
+
+    try {
+      const dbOk = await garantirDbInicializado();
+      if (!dbOk) throw new Error('Banco não disponível');
+
+      // Verifica se o registro existe e pertence ao usuário
+      const registro = db.getFirstSync<{ id: string }>(
+        `SELECT id FROM registros WHERE id = ? AND user_id = ?`,
+        [id, userId]
+      );
+
+      if (!registro) {
+        throw new Error('Registro não encontrado');
+      }
+
+      // Monta query de update
+      const setClauses: string[] = [];
+      const values: any[] = [];
+
+      if (updates.entrada) {
+        setClauses.push('entrada = ?');
+        values.push(updates.entrada);
+      }
+      if (updates.saida) {
+        setClauses.push('saida = ?');
+        values.push(updates.saida);
+      }
+      if (updates.editado_manualmente !== undefined) {
+        setClauses.push('editado_manualmente = ?');
+        values.push(updates.editado_manualmente);
+      }
+      if (updates.motivo_edicao) {
+        setClauses.push('motivo_edicao = ?');
+        values.push(updates.motivo_edicao);
+      }
+      if (updates.pausa_minutos !== undefined) {
+        setClauses.push('pausa_minutos = ?');
+        values.push(updates.pausa_minutos);
+      }
+
+      // Marca como não sincronizado (será re-enviado ao Supabase)
+      setClauses.push('synced_at = NULL');
+
+      if (setClauses.length === 1) { // só tem synced_at
+        throw new Error('Nenhum campo para atualizar');
+      }
+
+      values.push(id, userId);
+
+      db.runSync(
+        `UPDATE registros SET ${setClauses.join(', ')} WHERE id = ? AND user_id = ?`,
+        values
+      );
+
+      logger.info('registro', `✏️ Registro editado: ${id}`, { updates });
+
+      // Recarrega dados
+      await get().recarregarDados();
+    } catch (error) {
+      logger.error('registro', 'Erro ao editar registro', { error: String(error) });
+      throw error;
+    }
+  },
+
+  // ============================================
+  // CRIAR REGISTRO MANUAL
+  // ============================================
+  criarRegistroManual: async ({ localId, localNome, entrada, saida, pausaMinutos }) => {
+    const userId = useAuthStore.getState().getUserId();
+    if (!userId) {
+      throw new Error('Usuário não autenticado');
+    }
+
+    try {
+      const dbOk = await garantirDbInicializado();
+      if (!dbOk) throw new Error('Banco não disponível');
+
+      // Gera ID único
+      const id = `manual_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`;
+
+      // Insere registro completo (já com entrada e saída)
+      db.runSync(
+        `INSERT INTO registros (
+          id, user_id, local_id, local_nome, entrada, saida, 
+          tipo, editado_manualmente, motivo_edicao, pausa_minutos, synced_at
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL)`,
+        [
+          id,
+          userId,
+          localId,
+          localNome,
+          entrada,
+          saida,
+          'manual',
+          1,
+          'Entrada manual pelo usuário',
+          pausaMinutos || 0,
+        ]
+      );
+
+      logger.info('registro', `✏️ Registro manual criado: ${id}`, { localNome, entrada, saida, pausaMinutos });
+
+      // Recarrega dados
+      await get().recarregarDados();
+
+      return id;
+    } catch (error) {
+      logger.error('registro', 'Erro ao criar registro manual', { error: String(error) });
+      throw error;
     }
   },
 }));

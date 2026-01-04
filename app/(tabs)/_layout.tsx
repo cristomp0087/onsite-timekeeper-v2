@@ -1,11 +1,15 @@
 /**
  * Tabs Layout - OnSite Timekeeper
- * Bottom tab navigation
+ * 
+ * Navegação simplificada:
+ * - Home (cronômetro + histórico integrado)
+ * - Locais (mapa)
+ * - Configurações
  */
 
 import React from 'react';
+import { Text, Platform } from 'react-native';
 import { Tabs } from 'expo-router';
-import { Text, StyleSheet } from 'react-native';
 import { colors } from '../../src/constants/colors';
 
 export default function TabsLayout() {
@@ -20,70 +24,63 @@ export default function TabsLayout() {
         headerTitleStyle: {
           fontWeight: '600',
         },
-        tabBarStyle: styles.tabBar,
         tabBarActiveTintColor: colors.primary,
         tabBarInactiveTintColor: colors.textSecondary,
-        tabBarLabelStyle: styles.tabLabel,
+        tabBarStyle: {
+          backgroundColor: colors.white,
+          borderTopColor: colors.border,
+          paddingBottom: Platform.OS === 'ios' ? 20 : 8,
+          paddingTop: 8,
+          height: Platform.OS === 'ios' ? 85 : 65,
+        },
+        tabBarLabelStyle: {
+          fontSize: 12,
+          fontWeight: '500',
+        },
       }}
     >
       <Tabs.Screen
         name="index"
         options={{
-          title: 'Home',
+          title: 'OnSite',
           headerTitle: 'OnSite Timekeeper',
-          tabBarIcon: ({ color }) => (
-            <Text style={[styles.tabIcon, { color }]}>🏠</Text>
-          ),
+          tabBarLabel: 'Home',
+          tabBarIcon: () => <TabIcon emoji="🏠" />,
         }}
       />
+
       <Tabs.Screen
         name="map"
         options={{
           title: 'Locais',
           headerTitle: 'Meus Locais',
-          tabBarIcon: ({ color }) => (
-            <Text style={[styles.tabIcon, { color }]}>📍</Text>
-          ),
+          tabBarLabel: 'Locais',
+          tabBarIcon: () => <TabIcon emoji="📍" />,
         }}
       />
-      <Tabs.Screen
-        name="history"
-        options={{
-          title: 'Histórico',
-          headerTitle: 'Histórico',
-          tabBarIcon: ({ color }) => (
-            <Text style={[styles.tabIcon, { color }]}>📋</Text>
-          ),
-        }}
-      />
+
       <Tabs.Screen
         name="settings"
         options={{
           title: 'Ajustes',
           headerTitle: 'Configurações',
-          tabBarIcon: ({ color }) => (
-            <Text style={[styles.tabIcon, { color }]}>⚙️</Text>
-          ),
+          tabBarLabel: 'Ajustes',
+          tabBarIcon: () => <TabIcon emoji="⚙️" />,
+        }}
+      />
+
+      {/* ESCONDE a tab history se ainda existir o arquivo */}
+      <Tabs.Screen
+        name="history"
+        options={{
+          href: null, // Esconde da navegação
         }}
       />
     </Tabs>
   );
 }
 
-const styles = StyleSheet.create({
-  tabBar: {
-    backgroundColor: colors.white,
-    borderTopWidth: 1,
-    borderTopColor: colors.border,
-    paddingTop: 4,
-    paddingBottom: 4,
-    height: 60,
-  },
-  tabIcon: {
-    fontSize: 22,
-  },
-  tabLabel: {
-    fontSize: 12,
-    marginTop: -2,
-  },
-});
+// Componente simples de ícone com emoji
+function TabIcon({ emoji }: { emoji: string }) {
+  return <Text style={{ fontSize: 22 }}>{emoji}</Text>;
+}
