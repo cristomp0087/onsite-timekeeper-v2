@@ -165,10 +165,13 @@ export const useLocationStore = create<LocationState>((set, get) => ({
       // Importa background tasks (registra as tasks)
       await import('../lib/backgroundTasks');
 
-      // Verifica permissões
-      const permissoes = await verificarPermissoes();
+    // Verifica permissões - e pede se não tiver
+      let permissoes = await verificarPermissoes();
+      if (!permissoes.foreground || !permissoes.background) {
+        const { solicitarTodasPermissoes } = await import('../lib/location');
+        permissoes = await solicitarTodasPermissoes();
+      }
       set({ permissoes });
-
       // ============================================
       // CALLBACK DE GEOFENCE NATIVO
       // ============================================
