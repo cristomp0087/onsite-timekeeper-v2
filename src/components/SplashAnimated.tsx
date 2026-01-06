@@ -2,11 +2,12 @@
  * Splash Screen Animada - OnSite Timekeeper
  * 
  * - Logo cresce do centro
- * - Som de abertura
  * - Transição suave para o app
+ * 
+ * NOTA: Som desativado temporariamente para debug
  */
 
-import React, { useEffect, useRef, useState } from 'react';
+import React, { useEffect, useRef } from 'react';
 import {
   View,
   Image,
@@ -15,10 +16,9 @@ import {
   Dimensions,
   StatusBar,
 } from 'react-native';
-import { Audio } from 'expo-av';
 import { colors } from '../constants/colors';
 
-const { width, height } = Dimensions.get('window');
+const { width } = Dimensions.get('window');
 
 interface SplashAnimatedProps {
   onFinish: () => void;
@@ -28,34 +28,8 @@ export function SplashAnimated({ onFinish }: SplashAnimatedProps) {
   const scaleAnim = useRef(new Animated.Value(0.5)).current;
   const opacityAnim = useRef(new Animated.Value(0)).current;
   const fadeOutAnim = useRef(new Animated.Value(1)).current;
-  const [soundLoaded, setSoundLoaded] = useState(false);
 
   useEffect(() => {
-    let sound: Audio.Sound | null = null;
-
-    const playSound = async () => {
-      try {
-        // Configura o modo de áudio
-        await Audio.setAudioModeAsync({
-          playsInSilentModeIOS: true,
-          staysActiveInBackground: false,
-          shouldDuckAndroid: true,
-        });
-
-        // Carrega e toca o som
-        const { sound: loadedSound } = await Audio.Sound.createAsync(
-          require('../../assets/sounds/timekeeper_start.wav'),
-          { shouldPlay: true, volume: 0.7 }
-        );
-        sound = loadedSound;
-        setSoundLoaded(true);
-      } catch (error) {
-        console.log('Erro ao carregar som:', error);
-        // Continua mesmo sem som
-        setSoundLoaded(true);
-      }
-    };
-
     const startAnimation = () => {
       // Fade in + Scale up
       Animated.parallel([
@@ -84,16 +58,7 @@ export function SplashAnimated({ onFinish }: SplashAnimatedProps) {
       });
     };
 
-    // Inicia som e animação
-    playSound();
     startAnimation();
-
-    // Cleanup
-    return () => {
-      if (sound) {
-        sound.unloadAsync();
-      }
-    };
   }, []);
 
   return (
