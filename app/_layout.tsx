@@ -16,7 +16,6 @@ import { logger } from '../src/lib/logger';
 import { initDatabase } from '../src/lib/database';
 import { GeofenceAlert } from '../src/components/GeofenceAlert';
 import { DevMonitor } from '../src/components/DevMonitor';
-import { SplashAnimated } from '../src/components/SplashAnimated';
 import { useAuthStore } from '../src/stores/authStore';
 import { useLocationStore } from '../src/stores/locationStore';
 import { useRegistroStore } from '../src/stores/registroStore';
@@ -27,7 +26,6 @@ import { useSettingsStore } from '../src/stores/settingsStore';
 SplashScreen.preventAutoHideAsync();
 
 export default function RootLayout() {
-  const [showSplash, setShowSplash] = useState(true);
   const [isReady, setIsReady] = useState(false);
   const [storesInitialized, setStoresInitialized] = useState(false);
   const router = useRouter();
@@ -96,12 +94,12 @@ export default function RootLayout() {
   // Inicializa stores quando usuário faz LOGIN
   useEffect(() => {
     if (isReady && isAuthenticated && !storesInitialized) {
-      logger.info('boot', '🔐 Login detectado - inicializando stores...');
+      logger.info('boot', '🔑 Login detectado - inicializando stores...');
       initializeStores();
     }
   }, [isReady, isAuthenticated, storesInitialized]);
 
-  // Navegação baseada em auth
+  // Navegação baseada em auth - SÓ NAVEGA QUANDO READY
   useEffect(() => {
     if (!isReady || authLoading) return;
 
@@ -114,14 +112,11 @@ export default function RootLayout() {
     }
   }, [isReady, authLoading, isAuthenticated, segments]);
 
-  // SPLASH ANIMADA PRIMEIRO (antes de tudo)
-  if (showSplash) {
-    return <SplashAnimated onFinish={() => setShowSplash(false)} />;
-  }
-
+  // Loading enquanto bootstrap roda
   if (!isReady || authLoading) {
     return (
       <View style={styles.loadingContainer}>
+        <StatusBar style="light" />
         <ActivityIndicator size="large" color={colors.primary} />
       </View>
     );
