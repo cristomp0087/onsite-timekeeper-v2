@@ -1,13 +1,11 @@
 /**
  * Home/Dashboard Screen - OnSite Timekeeper
  * 
- * UI Consolidada:
- * - Header com logo
- * - Cronômetro com stats inline
- * - Cronômetro de pausa acumulativo
- * - Calendário semanal integrado
- * - Entrada manual [+]
- * - Exportar relatório
+ * Orchestrates:
+ * - TimerCard
+ * - CalendarView
+ * - DayReport
+ * - ManualEntryModal
  */
 
 import React, { useEffect, useState, useCallback } from 'react';
@@ -19,18 +17,14 @@ import {
   RefreshControl,
   TouchableOpacity,
   Alert,
-  Modal,
-  TextInput,
   Platform,
   Share,
   Image,
   StatusBar,
-  type ViewStyle,
 } from 'react-native';
 import * as FileSystem from 'expo-file-system';
 import * as Sharing from 'expo-sharing';
-import { colors, withOpacity } from '../../src/constants/colors';
-import { Card } from '../../src/components/ui/Button';
+import { colors } from '../../src/constants/colors';
 import { useAuthStore } from '../../src/stores/authStore';
 import { useLocationStore } from '../../src/stores/locationStore';
 import { useRegistroStore } from '../../src/stores/registroStore';
@@ -39,11 +33,15 @@ import { formatarDuracao } from '../../src/lib/database';
 import type { SessaoComputada } from '../../src/lib/database';
 import { gerarRelatorioCompleto } from '../../src/lib/reports';
 
+// Components
+import { TimerCard } from '../../src/components/home/TimerCard';
+import { CalendarView, getDayKey } from '../../src/components/home/CalendarView';
+import { DayReport } from '../../src/components/home/DayReport';
+import { ManualEntryModal } from '../../src/components/home/ManualEntryModal';
+
 // ============================================
 // HELPERS
 // ============================================
-
-const DIAS_SEMANA = ['Dom', 'Seg', 'Ter', 'Qua', 'Qui', 'Sex', 'Sáb'];
 
 function getInicioSemana(date: Date): Date {
   const d = new Date(date);
@@ -62,22 +60,20 @@ function getFimSemana(date: Date): Date {
   return fim;
 }
 
-function formatDateRange(inicio: Date, fim: Date): string {
-  const formatDay = (d: Date) => d.toLocaleDateString('pt-BR', { day: '2-digit', month: 'short' });
-  return `${formatDay(inicio)} - ${formatDay(fim)}`;
+function getInicioMes(date: Date): Date {
+  const d = new Date(date);
+  d.setDate(1);
+  d.setHours(0, 0, 0, 0);
+  return d;
 }
 
-// Formato AM/PM
-function formatTimeAMPM(iso: string): string {
-  const date = new Date(iso);
-  let hours = date.getHours();
-  const minutes = date.getMinutes();
-  const ampm = hours >= 12 ? 'PM' : 'AM';
-  hours = hours % 12;
-  hours = hours ? hours : 12; // 0 vira 12
-  return `${hours}:${minutes.toString().padStart(2, '0')} ${ampm}`;
+function getFimMes(date: Date): Date {
+  const d = new Date(date);
+  d.setMonth(d.getMonth() + 1);
+  d.setDate(0);
+  d.setHours(23, 59, 59, 999);
+  return d;
 }
-
 
 function isSameDay(d1: Date, d2: Date): boolean {
   return d1.getFullYear() === d2.getFullYear() &&
@@ -85,28 +81,15 @@ function isSameDay(d1: Date, d2: Date): boolean {
          d1.getDate() === d2.getDate();
 }
 
-function isToday(date: Date): boolean {
-  return isSameDay(date, new Date());
-}
-
-interface DiaCalendario {
-  data: Date;
-  diaSemana: string;
-  diaNumero: number;
-  sessoes: SessaoComputada[];
-  totalMinutos: number;
-}
-
 // ============================================
-// COMPONENTE PRINCIPAL
+// COMPONENT
 // ============================================
 
 export default function HomeScreen() {
   const userName = useAuthStore(s => s.getUserName());
-  const { locais, geofenceAtivo, isGeofencingAtivo, precisao } = useLocationStore();
+  const { locais, geofenceAtivo, isGeofencingAtivo } = useLocationStore();
   const { 
     sessaoAtual, 
-    estatisticasHoje, 
     recarregarDados, 
     registrarSaida, 
     registrarEntrada,
@@ -118,128 +101,118 @@ export default function HomeScreen() {
     editarRegistro,
     deletarRegistro,
   } = useRegistroStore();
-  const { isOnline, syncNow } = useSyncStore();
+  const { syncNow } = useSyncStore();
 
+  // ============================================
+  // STATES
+  // ============================================
+  
   const [refreshing, setRefreshing] = useState(false);
   const [cronometro, setCronometro] = useState('00:00:00');
   const [isPaused, setIsPaused] = useState(false);
 
-  // ============================================
-  // NOVOS ESTADOS - CRONÔMETRO DE PAUSA
-  // ============================================
+  // Pause timer
   const [pausaAcumuladaSegundos, setPausaAcumuladaSegundos] = useState(0);
   const [pausaCronometro, setPausaCronometro] = useState('00:00:00');
   const [pausaInicioTimestamp, setPausaInicioTimestamp] = useState<number | null>(null);
 
-  // Calendário
+  // Calendar
+  const [viewMode, setViewMode] = useState<'week' | 'month'>('week');
   const [semanaAtual, setSemanaAtual] = useState(new Date());
+  const [mesAtual, setMesAtual] = useState(new Date());
   const [sessoesSemana, setSessoesSemana] = useState<SessaoComputada[]>([]);
+  const [sessoesMes, setSessoesMes] = useState<SessaoComputada[]>([]);
   const [expandedDay, setExpandedDay] = useState<string | null>(null);
   
-  // Seleção múltipla
+  // Selection
   const [selectionMode, setSelectionMode] = useState(false);
   const [selectedDays, setSelectedDays] = useState<Set<string>>(new Set());
 
-  // Modal entrada manual / edição
+  // Manual entry modal
   const [showManualModal, setShowManualModal] = useState(false);
-  const [editingSessionId, setEditingSessionId] = useState<string | null>(null);
-  const [editingSessionTipo, setEditingSessionTipo] = useState<'automatico' | 'manual'>('manual');
   const [manualDate, setManualDate] = useState<Date>(new Date());
   const [manualLocalId, setManualLocalId] = useState<string>('');
   const [manualEntrada, setManualEntrada] = useState('');
   const [manualSaida, setManualSaida] = useState('');
   const [manualPausa, setManualPausa] = useState('');
 
-  // Local ativo
+  // Derived
   const localAtivo = geofenceAtivo ? locais.find(l => l.id === geofenceAtivo) : null;
-  const podeRecomecar = localAtivo && !sessaoAtual;
+  const sessoes = viewMode === 'week' ? sessoesSemana : sessoesMes;
 
   // ============================================
-  // CRONÔMETRO PRINCIPAL
+  // TIMER EFFECTS
   // ============================================
 
   useEffect(() => {
     if (!sessaoAtual || sessaoAtual.status !== 'ativa') {
       setCronometro('00:00:00');
       setIsPaused(false);
-      // Reset pausa quando sessão termina
       setPausaAcumuladaSegundos(0);
       setPausaCronometro('00:00:00');
       setPausaInicioTimestamp(null);
       return;
     }
 
-    if (isPaused) return;
-
     const updateCronometro = () => {
       const inicio = new Date(sessaoAtual.entrada).getTime();
       const agora = Date.now();
-      const diff = Math.floor((agora - inicio) / 1000);
-
-      const h = Math.floor(diff / 3600);
-      const m = Math.floor((diff % 3600) / 60);
-      const s = diff % 60;
-
+      const diffSec = Math.floor((agora - inicio) / 1000);
+      
+      const hours = Math.floor(diffSec / 3600);
+      const mins = Math.floor((diffSec % 3600) / 60);
+      const secs = diffSec % 60;
+      
       setCronometro(
-        `${h.toString().padStart(2, '0')}:${m.toString().padStart(2, '0')}:${s.toString().padStart(2, '0')}`
+        `${hours.toString().padStart(2, '0')}:${mins.toString().padStart(2, '0')}:${secs.toString().padStart(2, '0')}`
       );
     };
 
     updateCronometro();
     const interval = setInterval(updateCronometro, 1000);
     return () => clearInterval(interval);
-  }, [sessaoAtual, isPaused]);
-
-  // ============================================
-  // CRONÔMETRO DE PAUSA
-  // ============================================
+  }, [sessaoAtual]);
 
   useEffect(() => {
-    if (!isPaused || !pausaInicioTimestamp) {
-      const h = Math.floor(pausaAcumuladaSegundos / 3600);
-      const m = Math.floor((pausaAcumuladaSegundos % 3600) / 60);
-      const s = pausaAcumuladaSegundos % 60;
-      setPausaCronometro(
-        `${h.toString().padStart(2, '0')}:${m.toString().padStart(2, '0')}:${s.toString().padStart(2, '0')}`
-      );
-      return;
-    }
+    if (!sessaoAtual || sessaoAtual.status !== 'ativa') return;
 
     const updatePausaCronometro = () => {
-      const agora = Date.now();
-      const pausaAtualSegundos = Math.floor((agora - pausaInicioTimestamp) / 1000);
-      const totalPausa = pausaAcumuladaSegundos + pausaAtualSegundos;
-
-      const h = Math.floor(totalPausa / 3600);
-      const m = Math.floor((totalPausa % 3600) / 60);
-      const s = totalPausa % 60;
-
+      let totalPausaSegundos = pausaAcumuladaSegundos;
+      
+      if (isPaused && pausaInicioTimestamp) {
+        totalPausaSegundos += Math.floor((Date.now() - pausaInicioTimestamp) / 1000);
+      }
+      
+      const hours = Math.floor(totalPausaSegundos / 3600);
+      const mins = Math.floor((totalPausaSegundos % 3600) / 60);
+      const secs = totalPausaSegundos % 60;
+      
       setPausaCronometro(
-        `${h.toString().padStart(2, '0')}:${m.toString().padStart(2, '0')}:${s.toString().padStart(2, '0')}`
+        `${hours.toString().padStart(2, '0')}:${mins.toString().padStart(2, '0')}:${secs.toString().padStart(2, '0')}`
       );
     };
 
     updatePausaCronometro();
     const interval = setInterval(updatePausaCronometro, 1000);
     return () => clearInterval(interval);
-  }, [isPaused, pausaInicioTimestamp, pausaAcumuladaSegundos]);
+  }, [isPaused, pausaInicioTimestamp, pausaAcumuladaSegundos, sessaoAtual]);
 
-  // Sessão finalizada alert
+  // Session finished alert
   useEffect(() => {
     if (ultimaSessaoFinalizada) {
       Alert.alert(
-        '✅ Sessão Finalizada',
-        `Local: ${ultimaSessaoFinalizada.local_nome}\nDuração: ${formatarDuracao(ultimaSessaoFinalizada.duracao_minutos)}`,
+        '✅ Session Finished',
+        `Location: ${ultimaSessaoFinalizada.local_nome}\nDuration: ${formatarDuracao(ultimaSessaoFinalizada.duracao_minutos)}`,
         [
           { text: 'OK', onPress: limparUltimaSessao },
-          { text: '📤 Compartilhar', onPress: () => { compartilharUltimaSessao(); limparUltimaSessao(); } },
+          { text: '📤 Share', onPress: () => { compartilharUltimaSessao(); limparUltimaSessao(); } },
         ]
       );
     }
   }, [ultimaSessaoFinalizada]);
 
   // ============================================
-  // CARREGAR SESSÕES DA SEMANA
+  // LOAD DATA
   // ============================================
 
   const loadSessoesSemana = useCallback(async () => {
@@ -249,32 +222,51 @@ export default function HomeScreen() {
     setSessoesSemana(result);
   }, [semanaAtual, getSessoesPeriodo]);
 
-  useEffect(() => {
-    loadSessoesSemana();
-  }, [semanaAtual, loadSessoesSemana]);
+  const loadSessoesMes = useCallback(async () => {
+    const inicio = getInicioMes(mesAtual);
+    const fim = getFimMes(mesAtual);
+    const result = await getSessoesPeriodo(inicio.toISOString(), fim.toISOString());
+    setSessoesMes(result);
+  }, [mesAtual, getSessoesPeriodo]);
 
   useEffect(() => {
-    loadSessoesSemana();
+    if (viewMode === 'week') {
+      loadSessoesSemana();
+    } else {
+      loadSessoesMes();
+    }
+  }, [viewMode, semanaAtual, mesAtual, loadSessoesSemana, loadSessoesMes]);
+
+  useEffect(() => {
+    if (viewMode === 'week') {
+      loadSessoesSemana();
+    } else {
+      loadSessoesMes();
+    }
   }, [sessaoAtual]);
 
   const onRefresh = async () => {
     setRefreshing(true);
     await recarregarDados();
-    await loadSessoesSemana();
+    if (viewMode === 'week') {
+      await loadSessoesSemana();
+    } else {
+      await loadSessoesMes();
+    }
     await syncNow();
     setRefreshing(false);
   };
 
   // ============================================
-  // AÇÕES DO CRONÔMETRO
+  // TIMER HANDLERS
   // ============================================
 
-  const handlePausar = () => {
+  const handlePause = () => {
     setIsPaused(true);
     setPausaInicioTimestamp(Date.now());
   };
 
-  const handleContinuar = () => {
+  const handleResume = () => {
     if (pausaInicioTimestamp) {
       const pausaDuracao = Math.floor((Date.now() - pausaInicioTimestamp) / 1000);
       setPausaAcumuladaSegundos(prev => prev + pausaDuracao);
@@ -283,7 +275,7 @@ export default function HomeScreen() {
     setIsPaused(false);
   };
 
-  const handleParar = () => {
+  const handleStop = () => {
     if (!sessaoAtual) return;
     
     let pausaTotalSegundos = pausaAcumuladaSegundos;
@@ -293,12 +285,12 @@ export default function HomeScreen() {
     const pausaTotalMinutos = Math.floor(pausaTotalSegundos / 60);
 
     Alert.alert(
-      '⏹️ Parar Cronômetro',
-      `Deseja encerrar a sessão atual?${pausaTotalMinutos > 0 ? `\n\nPausa total: ${pausaTotalMinutos} minutos` : ''}`,
+      '⏹️ Stop Timer',
+      `End current session?${pausaTotalMinutos > 0 ? `\n\nTotal break: ${pausaTotalMinutos} minutes` : ''}`,
       [
-        { text: 'Cancelar', style: 'cancel' },
+        { text: 'Cancel', style: 'cancel' },
         {
-          text: 'Parar',
+          text: 'Stop',
           style: 'destructive',
           onPress: async () => {
             try {
@@ -308,7 +300,7 @@ export default function HomeScreen() {
                 await editarRegistro(sessaoAtual.id, {
                   pausa_minutos: pausaTotalMinutos,
                   editado_manualmente: 1,
-                  motivo_edicao: 'Pausa registrada automaticamente',
+                  motivo_edicao: 'Break recorded automatically',
                 });
               }
               
@@ -317,7 +309,7 @@ export default function HomeScreen() {
               setPausaInicioTimestamp(null);
               setPausaCronometro('00:00:00');
             } catch (error: any) {
-              Alert.alert('Erro', error.message || 'Não foi possível encerrar');
+              Alert.alert('Error', error.message || 'Could not stop session');
             }
           },
         },
@@ -325,20 +317,20 @@ export default function HomeScreen() {
     );
   };
 
-  const handleRecomecar = async () => {
+  const handleStart = async () => {
     if (!localAtivo) return;
     Alert.alert(
-      '▶️ Iniciar Nova Sessão',
-      `Iniciar cronômetro em "${localAtivo.nome}"?`,
+      '▶️ Start New Session',
+      `Start timer at "${localAtivo.nome}"?`,
       [
-        { text: 'Cancelar', style: 'cancel' },
+        { text: 'Cancel', style: 'cancel' },
         {
-          text: 'Iniciar',
+          text: 'Start',
           onPress: async () => {
             try {
               await registrarEntrada(localAtivo.id, localAtivo.nome);
             } catch (error: any) {
-              Alert.alert('Erro', error.message || 'Não foi possível iniciar');
+              Alert.alert('Error', error.message || 'Could not start');
             }
           },
         },
@@ -347,72 +339,62 @@ export default function HomeScreen() {
   };
 
   // ============================================
-  // CALENDÁRIO
+  // CALENDAR HANDLERS
   // ============================================
 
-  const inicioSemana = getInicioSemana(semanaAtual);
-  const fimSemana = getFimSemana(semanaAtual);
-
-  const diasCalendario: DiaCalendario[] = [];
-  for (let i = 0; i < 7; i++) {
-    const data = new Date(inicioSemana);
-    data.setDate(data.getDate() + i);
-
-    const sessoesDodia = sessoesSemana.filter(s => {
-      const sessaoDate = new Date(s.entrada);
-      return isSameDay(sessaoDate, data);
-    });
-
-    const totalMinutos = sessoesDodia
-      .filter(s => s.saida)
-      .reduce((acc, s) => {
-        const pausaMin = s.pausa_minutos || 0;
-        return acc + Math.max(0, s.duracao_minutos - pausaMin);
-      }, 0);
-
-    diasCalendario.push({
-      data,
-      diaSemana: DIAS_SEMANA[data.getDay()],
-      diaNumero: data.getDate(),
-      sessoes: sessoesDodia,
-      totalMinutos,
-    });
-  }
-
-  const totalSemanaMinutos = sessoesSemana
-    .filter(s => s.saida)
-    .reduce((acc, s) => {
-      const pausaMin = s.pausa_minutos || 0;
-      return acc + Math.max(0, s.duracao_minutos - pausaMin);
-    }, 0);
-
-  const goToPreviousWeek = () => {
-    const newDate = new Date(semanaAtual);
-    newDate.setDate(newDate.getDate() - 7);
-    setSemanaAtual(newDate);
+  const handleViewModeChange = (mode: 'week' | 'month') => {
+    setViewMode(mode);
     setExpandedDay(null);
+    cancelSelection();
   };
 
-  const goToNextWeek = () => {
-    const newDate = new Date(semanaAtual);
-    newDate.setDate(newDate.getDate() + 7);
-    setSemanaAtual(newDate);
+  const handlePrevious = () => {
+    if (viewMode === 'week') {
+      const newDate = new Date(semanaAtual);
+      newDate.setDate(newDate.getDate() - 7);
+      setSemanaAtual(newDate);
+    } else {
+      const newDate = new Date(mesAtual);
+      newDate.setMonth(newDate.getMonth() - 1);
+      setMesAtual(newDate);
+    }
     setExpandedDay(null);
+    cancelSelection();
   };
 
-  const goToCurrentWeek = () => {
-    setSemanaAtual(new Date());
+  const handleNext = () => {
+    if (viewMode === 'week') {
+      const newDate = new Date(semanaAtual);
+      newDate.setDate(newDate.getDate() + 7);
+      setSemanaAtual(newDate);
+    } else {
+      const newDate = new Date(mesAtual);
+      newDate.setMonth(newDate.getMonth() + 1);
+      setMesAtual(newDate);
+    }
+    setExpandedDay(null);
+    cancelSelection();
+  };
+
+  const handleToday = () => {
+    if (viewMode === 'week') {
+      setSemanaAtual(new Date());
+    } else {
+      setMesAtual(new Date());
+    }
     setExpandedDay(null);
     cancelSelection();
   };
 
   // ============================================
-  // SELEÇÃO MÚLTIPLA
+  // DAY SELECTION
   // ============================================
 
   const handleDayPress = (dayKey: string, hasSessoes: boolean) => {
     if (selectionMode) {
-      toggleSelectDay(dayKey);
+      if (hasSessoes) {
+        toggleSelectDay(dayKey);
+      }
     } else if (hasSessoes) {
       setExpandedDay(expandedDay === dayKey ? null : dayKey);
     }
@@ -449,12 +431,10 @@ export default function HomeScreen() {
   };
 
   // ============================================
-  // ENTRADA MANUAL / EDIÇÃO
+  // MANUAL ENTRY
   // ============================================
 
   const openManualEntry = (date: Date) => {
-    setEditingSessionId(null);
-    setEditingSessionTipo('manual');
     setManualDate(date);
     setManualLocalId(locais[0]?.id || '');
     setManualEntrada('');
@@ -463,66 +443,23 @@ export default function HomeScreen() {
     setShowManualModal(true);
   };
 
-  const openEditSession = (sessao: SessaoComputada) => {
-    setEditingSessionId(sessao.id);
-    setEditingSessionTipo(sessao.tipo as 'automatico' | 'manual');
-    setManualDate(new Date(sessao.entrada));
-    setManualLocalId(sessao.local_id);
-    const entradaDate = new Date(sessao.entrada);
-    const saidaDate = sessao.saida ? new Date(sessao.saida) : null;
-    setManualEntrada(`${entradaDate.getHours().toString().padStart(2, '0')}:${entradaDate.getMinutes().toString().padStart(2, '0')}`);
-    setManualSaida(saidaDate ? `${saidaDate.getHours().toString().padStart(2, '0')}:${saidaDate.getMinutes().toString().padStart(2, '0')}` : '');
-    setManualPausa(sessao.pausa_minutos ? sessao.pausa_minutos.toString() : '');
-    setShowManualModal(true);
-  };
-
-  const handleDeleteSession = (sessao: SessaoComputada) => {
-    Alert.alert(
-      '🗑️ Deletar Registro',
-      `Deseja deletar este registro?\n\n${sessao.local_nome}\n${formatTimeAMPM(sessao.entrada)} → ${sessao.saida ? formatTimeAMPM(sessao.saida) : '---'}`,
-      [
-        { text: 'Cancelar', style: 'cancel' },
-        {
-          text: 'Deletar',
-          style: 'destructive',
-          onPress: async () => {
-            try {
-              await deletarRegistro(sessao.id);
-              loadSessoesSemana();
-              setExpandedDay(null);
-              Alert.alert('✅ Deletado', 'Registro removido com sucesso');
-            } catch (error: any) {
-              Alert.alert('Erro', error.message || 'Não foi possível deletar');
-            }
-          },
-        },
-      ]
-    );
-  };
-
   const handleSaveManual = async () => {
     if (!manualLocalId) {
-      Alert.alert('Erro', 'Selecione um local');
+      Alert.alert('Error', 'Select a location');
       return;
     }
-
-    const timeRegex = /^([0-1]?[0-9]|2[0-3]):([0-5][0-9])$/;
-    if (!timeRegex.test(manualEntrada) || !timeRegex.test(manualSaida)) {
-      Alert.alert('Erro', 'Use o formato HH:MM (ex: 08:30)');
+    if (!manualEntrada || !manualSaida) {
+      Alert.alert('Error', 'Fill in entry and exit times');
       return;
-    }
-
-    let pausaMinutos = 0;
-    if (manualPausa.trim()) {
-      pausaMinutos = parseInt(manualPausa, 10);
-      if (isNaN(pausaMinutos) || pausaMinutos < 0) {
-        Alert.alert('Erro', 'Pausa inválida. Use número de minutos (ex: 60)');
-        return;
-      }
     }
 
     const [entradaH, entradaM] = manualEntrada.split(':').map(Number);
     const [saidaH, saidaM] = manualSaida.split(':').map(Number);
+
+    if (isNaN(entradaH) || isNaN(entradaM) || isNaN(saidaH) || isNaN(saidaM)) {
+      Alert.alert('Error', 'Invalid time format. Use HH:MM');
+      return;
+    }
 
     const entradaDate = new Date(manualDate);
     entradaDate.setHours(entradaH, entradaM, 0, 0);
@@ -531,81 +468,107 @@ export default function HomeScreen() {
     saidaDate.setHours(saidaH, saidaM, 0, 0);
 
     if (saidaDate <= entradaDate) {
-      Alert.alert('Erro', 'Saída deve ser após a entrada');
+      Alert.alert('Error', 'Exit must be after entry');
       return;
     }
 
+    const pausaMinutos = manualPausa ? parseInt(manualPausa, 10) : 0;
+
     try {
-      if (editingSessionId) {
-        await editarRegistro(editingSessionId, {
-          entrada: entradaDate.toISOString(),
-          saida: saidaDate.toISOString(),
-          editado_manualmente: 1,
-          motivo_edicao: 'Editado pelo usuário',
-          pausa_minutos: pausaMinutos,
-        });
-        Alert.alert('✅ Sucesso', 'Registro atualizado!');
-      } else {
-        const local = locais.find(l => l.id === manualLocalId);
-        await criarRegistroManual({
-          localId: manualLocalId,
-          localNome: local?.nome || 'Local',
-          entrada: entradaDate.toISOString(),
-          saida: saidaDate.toISOString(),
-          pausaMinutos: pausaMinutos,
-        });
-        Alert.alert('✅ Sucesso', 'Registro adicionado!');
-      }
+      const local = locais.find(l => l.id === manualLocalId);
+      await criarRegistroManual({
+        localId: manualLocalId,
+        localNome: local?.nome || 'Location',
+        entrada: entradaDate.toISOString(),
+        saida: saidaDate.toISOString(),
+        pausaMinutos: pausaMinutos,
+      });
+      Alert.alert('✅ Success', 'Record added!');
 
       setShowManualModal(false);
-      setEditingSessionId(null);
-      setManualPausa('');
-      loadSessoesSemana();
+      if (viewMode === 'week') {
+        loadSessoesSemana();
+      } else {
+        loadSessoesMes();
+      }
     } catch (error: any) {
-      Alert.alert('Erro', error.message || 'Não foi possível salvar');
+      Alert.alert('Error', error.message || 'Could not save');
     }
   };
 
   // ============================================
-  // EXPORTAR
+  // DELETE DAY
+  // ============================================
+
+  const handleDeleteDay = (sessoesDodia: SessaoComputada[]) => {
+    const sessoesFinalizadas = sessoesDodia.filter(s => s.saida);
+    if (sessoesFinalizadas.length === 0) return;
+
+    Alert.alert(
+      '🗑️ Delete Day',
+      `Delete all ${sessoesFinalizadas.length} record(s) from this day?`,
+      [
+        { text: 'Cancel', style: 'cancel' },
+        {
+          text: 'Delete',
+          style: 'destructive',
+          onPress: async () => {
+            try {
+              for (const sessao of sessoesFinalizadas) {
+                await deletarRegistro(sessao.id);
+              }
+              setExpandedDay(null);
+              if (viewMode === 'week') {
+                loadSessoesSemana();
+              } else {
+                loadSessoesMes();
+              }
+            } catch (error: any) {
+              Alert.alert('Error', error.message || 'Could not delete');
+            }
+          },
+        },
+      ]
+    );
+  };
+
+  // ============================================
+  // EXPORT
   // ============================================
 
   const handleExport = async () => {
     let sessoesToExport: SessaoComputada[];
     
     if (selectionMode && selectedDays.size > 0) {
-      sessoesToExport = sessoesSemana.filter(s => {
+      sessoesToExport = sessoes.filter(s => {
         const sessaoDate = new Date(s.entrada);
-        return Array.from(selectedDays).some(dayKey => {
-          const dayDate = new Date(dayKey);
-          return isSameDay(sessaoDate, dayDate);
-        });
+        const dayKey = getDayKey(sessaoDate);
+        return selectedDays.has(dayKey);
       });
     } else {
-      sessoesToExport = sessoesSemana;
+      sessoesToExport = sessoes;
     }
 
     const sessoesFinalizadas = sessoesToExport.filter(s => s.saida);
 
     if (sessoesFinalizadas.length === 0) {
-      Alert.alert('Aviso', 'Nenhuma sessão finalizada para exportar');
+      Alert.alert('Warning', 'No completed sessions to export');
       return;
     }
 
     Alert.alert(
-      '📤 Exportar Relatório',
-      'Como deseja exportar?',
+      '📤 Export Report',
+      'How would you like to export?',
       [
-        { text: 'Cancelar', style: 'cancel' },
-        { text: '💬 Texto (WhatsApp)', onPress: () => exportarComoTexto(sessoesFinalizadas) },
-        { text: '📄 Arquivo', onPress: () => exportarComoArquivo(sessoesFinalizadas) },
+        { text: 'Cancel', style: 'cancel' },
+        { text: '💬 Text (WhatsApp)', onPress: () => exportAsText(sessoesFinalizadas) },
+        { text: '📄 File', onPress: () => exportAsFile(sessoesFinalizadas) },
       ]
     );
   };
 
-  const exportarComoTexto = async (sessoes: SessaoComputada[]) => {
-    const txt = gerarRelatorioCompleto(sessoes, userName || undefined);
-    
+  const exportAsText = async (sessoesToExport: SessaoComputada[]) => {
+    const txt = gerarRelatorioCompleto(sessoesToExport, userName || undefined);
     try {
       await Share.share({ message: txt, title: 'Time Report' });
       cancelSelection();
@@ -614,9 +577,8 @@ export default function HomeScreen() {
     }
   };
 
-  const exportarComoArquivo = async (sessoes: SessaoComputada[]) => {
-    const txt = gerarRelatorioCompleto(sessoes, userName || undefined);
-    
+  const exportAsFile = async (sessoesToExport: SessaoComputada[]) => {
+    const txt = gerarRelatorioCompleto(sessoesToExport, userName || undefined);
     try {
       const now = new Date();
       const fileName = `report_${now.toISOString().split('T')[0]}.txt`;
@@ -632,7 +594,6 @@ export default function HomeScreen() {
           dialogTitle: 'Save Report',
         });
       }
-      
       cancelSelection();
     } catch (error) {
       console.error('Error exporting file:', error);
@@ -640,6 +601,18 @@ export default function HomeScreen() {
     }
   };
 
+  // ============================================
+  // RENDER DAY REPORT
+  // ============================================
+
+  const renderDayReport = (date: Date) => (
+    <DayReport
+      date={date}
+      sessoes={sessoes}
+      onAddManual={openManualEntry}
+      onDeleteDay={handleDeleteDay}
+    />
+  );
 
   // ============================================
   // RENDER
@@ -651,330 +624,91 @@ export default function HomeScreen() {
       contentContainerStyle={styles.content}
       refreshControl={<RefreshControl refreshing={refreshing} onRefresh={onRefresh} />}
     >
-      {/* HEADER COM LOGO */}
+      {/* HEADER */}
       <View style={styles.header}>
-        <Text style={styles.greeting}>Olá, {userName || 'Trabalhador'}! 👋</Text>
         <Image 
           source={require('../../assets/logo-text-white.png')} 
           style={styles.headerLogo}
           resizeMode="contain"
         />
+        <Text style={styles.greeting}>Hello, {userName || 'Worker'}</Text>
       </View>
 
-      {/* CRONÔMETRO */}
-      <Card style={[
-  styles.timerCard,
-  sessaoAtual && styles.timerCardActive,
-  podeRecomecar && styles.timerCardIdle
-].filter(Boolean) as ViewStyle[]}>
-        {sessaoAtual ? (
-          <>
-            <Text style={styles.timerLocal}>{sessaoAtual.local_nome}</Text>
-            <Text style={[styles.timer, isPaused && styles.timerPaused]}>{cronometro}</Text>
-
-            {/* MINI CRONÔMETRO DE PAUSA */}
-            <View style={styles.pausaContainer}>
-              <Text style={styles.pausaLabel}>⏸️ Pausa:</Text>
-              <Text style={[styles.pausaTimer, isPaused && styles.pausaTimerActive]}>
-                {pausaCronometro}
-              </Text>
-            </View>
-
-            <View style={styles.timerActions}>
-              {isPaused ? (
-                <TouchableOpacity style={[styles.actionBtn, styles.continueBtn]} onPress={handleContinuar}>
-                  <Text style={styles.actionBtnText}>▶️ Continuar</Text>
-                </TouchableOpacity>
-              ) : (
-                <TouchableOpacity style={[styles.actionBtn, styles.pauseBtn]} onPress={handlePausar}>
-                  <Text style={styles.actionBtnText}>⏸️ Pausar</Text>
-                </TouchableOpacity>
-              )}
-              <TouchableOpacity style={[styles.actionBtn, styles.stopBtn]} onPress={handleParar}>
-                <Text style={styles.actionBtnText}>⏹️ Parar</Text>
-              </TouchableOpacity>
-            </View>
-          </>
-        ) : podeRecomecar ? (
-          <>
-            <Text style={styles.timerLocal}>{localAtivo?.nome}</Text>
-            <Text style={styles.timer}>00:00:00</Text>
-            <TouchableOpacity style={[styles.actionBtn, styles.startBtn]} onPress={handleRecomecar}>
-              <Text style={styles.actionBtnText}>▶️ Iniciar</Text>
-            </TouchableOpacity>
-          </>
-        ) : (
-          <>
-            <Text style={styles.timerHint}>
-              {isGeofencingAtivo ? 'Aguardando entrada em local...' : 'Monitoramento inativo'}
-            </Text>
-            <Text style={styles.timer}>--:--:--</Text>
-          </>
-        )}
-      </Card>
+      {/* TIMER */}
+      <TimerCard
+        sessaoAtual={sessaoAtual}
+        localAtivo={localAtivo ? { id: localAtivo.id, nome: localAtivo.nome } : null}
+        isGeofencingAtivo={isGeofencingAtivo}
+        cronometro={cronometro}
+        pausaCronometro={pausaCronometro}
+        isPaused={isPaused}
+        onPause={handlePause}
+        onResume={handleResume}
+        onStop={handleStop}
+        onStart={handleStart}
+      />
 
       <View style={styles.sectionDivider} />
 
-      {/* NAVEGAÇÃO SEMANAL */}
-      <Card style={styles.weekCard}>
-        <View style={styles.calendarHeader}>
-          <TouchableOpacity style={styles.navBtn} onPress={goToPreviousWeek}>
-            <Text style={styles.navBtnText}>◀</Text>
-          </TouchableOpacity>
-
-          <TouchableOpacity onPress={goToCurrentWeek} style={styles.calendarCenter}>
-            <Text style={styles.calendarTitle}>{formatDateRange(inicioSemana, fimSemana)}</Text>
-            <Text style={styles.calendarTotal}>{formatarDuracao(totalSemanaMinutos)}</Text>
-          </TouchableOpacity>
-
-          <TouchableOpacity style={styles.navBtn} onPress={goToNextWeek}>
-            <Text style={styles.navBtnText}>▶</Text>
-          </TouchableOpacity>
-        </View>
-      </Card>
-
-      <View style={styles.sectionDivider} />
-
-      {/* SELEÇÃO */}
+      {/* SELECTION BAR */}
       {selectionMode && (
         <View style={styles.selectionBar}>
-          <Text style={styles.selectionText}>{selectedDays.size} dia(s) selecionado(s)</Text>
+          <Text style={styles.selectionText}>{selectedDays.size} day(s) selected</Text>
           <TouchableOpacity onPress={cancelSelection}>
-            <Text style={styles.selectionCancel}>Cancelar</Text>
+            <Text style={styles.selectionCancel}>Cancel</Text>
           </TouchableOpacity>
         </View>
       )}
 
-      {/* DIAS DA SEMANA */}
-      {diasCalendario.map((dia) => {
-        const dayKey = dia.data.toISOString();
-        const isExpanded = expandedDay === dayKey && !selectionMode;
-        const hasSessoes = dia.sessoes.length > 0;
-        const isDiaHoje = isToday(dia.data);
-        const hasAtiva = dia.sessoes.some(s => !s.saida);
-        const isSelected = selectedDays.has(dayKey);
-        const sessoesFinalizadas = dia.sessoes.filter(s => s.saida);
+      {/* CALENDAR */}
+      <CalendarView
+        viewMode={viewMode}
+        semanaAtual={semanaAtual}
+        mesAtual={mesAtual}
+        sessoesSemana={sessoesSemana}
+        sessoesMes={sessoesMes}
+        expandedDay={expandedDay}
+        selectionMode={selectionMode}
+        selectedDays={selectedDays}
+        onViewModeChange={handleViewModeChange}
+        onPrevious={handlePrevious}
+        onNext={handleNext}
+        onToday={handleToday}
+        onDayPress={handleDayPress}
+        onDayLongPress={handleDayLongPress}
+        onAddManual={openManualEntry}
+        renderDayReport={renderDayReport}
+      />
 
-        return (
-          <TouchableOpacity
-            key={dayKey}
-            style={[
-              styles.dayRow,
-              isDiaHoje && styles.dayRowToday,
-              isSelected && styles.dayRowSelected,
-            ]}
-            onPress={() => handleDayPress(dayKey, hasSessoes)}
-            onLongPress={() => handleDayLongPress(dayKey, hasSessoes)}
-            delayLongPress={400}
-            activeOpacity={0.7}
-          >
-            {selectionMode && hasSessoes && (
-              <View style={[styles.checkbox, isSelected && styles.checkboxSelected]}>
-                {isSelected && <Text style={styles.checkmark}>✓</Text>}
-              </View>
-            )}
-
-            <View style={styles.dayLeft}>
-              <Text style={[styles.dayName, isDiaHoje && styles.dayNameToday]}>{dia.diaSemana}</Text>
-              <View style={[styles.dayCircle, isDiaHoje && styles.dayCircleToday]}>
-                <Text style={[styles.dayNumber, isDiaHoje && styles.dayNumberToday]}>{dia.diaNumero}</Text>
-              </View>
-            </View>
-
-            <View style={styles.dayRight}>
-              {!hasSessoes ? (
-                <View style={styles.dayEmpty}>
-                  <Text style={styles.dayEmptyText}>Sem registro</Text>
-                  {!selectionMode && (
-                    <TouchableOpacity style={styles.addBtn} onPress={(e) => { e.stopPropagation(); openManualEntry(dia.data); }}>
-                      <Text style={styles.addBtnText}>+</Text>
-                    </TouchableOpacity>
-                  )}
-                </View>
-              ) : (
-                <>
-                  {!isExpanded && (
-                    <View style={styles.dayPreview}>
-                      <Text style={styles.dayPreviewTime}>
-                        {formatTimeAMPM(dia.sessoes[0].entrada)}
-                        {dia.sessoes[0].saida ? ` → ${formatTimeAMPM(dia.sessoes[0].saida)}` : ' → ⏱️'}
-                      </Text>
-                      <Text style={[styles.dayPreviewDuration, hasAtiva && { color: colors.success }]}>
-                        {hasAtiva ? 'Em andamento' : formatarDuracao(dia.totalMinutos)}
-                      </Text>
-                    </View>
-                  )}
-
-                  {isExpanded && (
-                    <View style={styles.dayExpanded}>
-                      {sessoesFinalizadas.map((sessao) => {
-                        const isManual = sessao.tipo === 'manual';
-                        const isAjustado = sessao.editado_manualmente === 1 && !isManual;
-                        const pausaMin = sessao.pausa_minutos || 0;
-                        const totalLiquido = Math.max(0, sessao.duracao_minutos - pausaMin);
-                        
-                        return (
-                          <View key={sessao.id} style={styles.reportCard}>
-                            <View style={styles.reportHeader}>
-                              <Text style={styles.reportLocal}>{sessao.local_nome}</Text>
-                              <View style={styles.reportActions}>
-                                <TouchableOpacity style={styles.actionBtnInline} onPress={() => openEditSession(sessao)}>
-                                  <Text style={styles.actionBtnInlineText}>✏️</Text>
-                                </TouchableOpacity>
-                                <TouchableOpacity style={styles.actionBtnInline} onPress={() => handleDeleteSession(sessao)}>
-                                  <Text style={styles.actionBtnInlineText}>🗑️</Text>
-                                </TouchableOpacity>
-                              </View>
-                            </View>
-                            
-                            {isManual ? (
-                              <Text style={styles.reportTimeAdjusted}>
-                                *{formatTimeAMPM(sessao.entrada)} → {formatTimeAMPM(sessao.saida!)}
-                              </Text>
-                            ) : (
-                              <>
-                                <Text style={styles.reportTime}>
-                                  {formatTimeAMPM(sessao.entrada)} → {formatTimeAMPM(sessao.saida!)}
-                                </Text>
-                                {isAjustado && <Text style={styles.reportTimeAdjusted}>*Ajustado</Text>}
-                              </>
-                            )}
-                            
-                            {pausaMin > 0 && (
-                              <Text style={styles.reportPausa}>Pausa: {formatarDuracao(pausaMin)}</Text>
-                            )}
-                            
-                            <Text style={styles.reportTotal}>{formatarDuracao(totalLiquido)}</Text>
-                          </View>
-                        );
-                      })}
-                      
-                      {sessoesFinalizadas.length > 1 && (
-                        <Text style={styles.dayTotalText}>Total do dia: {formatarDuracao(dia.totalMinutos)}</Text>
-                      )}
-                    </View>
-                  )}
-                </>
-              )}
-            </View>
-
-            {hasSessoes && !selectionMode && (
-              <Text style={styles.expandIcon}>{isExpanded ? '▲' : '▼'}</Text>
-            )}
-          </TouchableOpacity>
-        );
-      })}
-
-      {/* EXPORTAR */}
+      {/* EXPORT BUTTON */}
       {selectionMode ? (
         <TouchableOpacity style={styles.exportBtn} onPress={handleExport}>
-          <Text style={styles.exportBtnText}>📤 Exportar {selectedDays.size} dia(s)</Text>
+          <Text style={styles.exportBtnText}>📤 Export {selectedDays.size} day(s)</Text>
         </TouchableOpacity>
       ) : (
         <TouchableOpacity style={styles.exportBtnSecondary} onPress={handleExport}>
-          <Text style={styles.exportBtnSecondaryText}>📤 Exportar Semana</Text>
+          <Text style={styles.exportBtnSecondaryText}>
+            📤 Export {viewMode === 'week' ? 'Week' : 'Month'}
+          </Text>
         </TouchableOpacity>
       )}
 
-      {/* MODAL */}
-      <Modal
+      {/* MANUAL ENTRY MODAL */}
+      <ManualEntryModal
         visible={showManualModal}
-        transparent
-        animationType="slide"
-        onRequestClose={() => { setShowManualModal(false); setEditingSessionId(null); }}
-      >
-        <View style={styles.modalOverlay}>
-          <View style={styles.modalContent}>
-            <Text style={styles.modalTitle}>
-              {editingSessionId ? '✏️ Editar Registro' : '➕ Entrada Manual'}
-            </Text>
-            <Text style={styles.modalSubtitle}>
-              {manualDate.toLocaleDateString('pt-BR', { weekday: 'long', day: 'numeric', month: 'long' })}
-            </Text>
-
-            {/* Local picker - só editável se manual */}
-            {(!editingSessionId || editingSessionTipo === 'manual') ? (
-              <>
-                <Text style={styles.inputLabel}>Local:</Text>
-                <View style={styles.localPicker}>
-                  {locais.map(local => (
-                    <TouchableOpacity
-                      key={local.id}
-                      style={[styles.localOption, manualLocalId === local.id && styles.localOptionActive]}
-                      onPress={() => setManualLocalId(local.id)}
-                    >
-                      <View style={[styles.localDot, { backgroundColor: local.cor }]} />
-                      <Text style={[styles.localOptionText, manualLocalId === local.id && styles.localOptionTextActive]}>
-                        {local.nome}
-                      </Text>
-                    </TouchableOpacity>
-                  ))}
-                </View>
-              </>
-            ) : (
-              <>
-                <Text style={styles.inputLabel}>Local (GPS):</Text>
-                <View style={styles.localGpsInfo}>
-                  <Text style={styles.localGpsText}>📍 {locais.find(l => l.id === manualLocalId)?.nome || 'Local'}</Text>
-                  <Text style={styles.localGpsHint}>Local registrado por GPS não pode ser alterado</Text>
-                </View>
-              </>
-            )}
-
-            <View style={styles.timeRow}>
-              <View style={styles.timeField}>
-                <Text style={styles.inputLabel}>Entrada:</Text>
-                <TextInput
-                  style={styles.timeInput}
-                  placeholder="08:00"
-                  placeholderTextColor={colors.textSecondary}
-                  value={manualEntrada}
-                  onChangeText={setManualEntrada}
-                  keyboardType="numbers-and-punctuation"
-                  maxLength={5}
-                />
-              </View>
-              <View style={styles.timeField}>
-                <Text style={styles.inputLabel}>Saída:</Text>
-                <TextInput
-                  style={styles.timeInput}
-                  placeholder="17:00"
-                  placeholderTextColor={colors.textSecondary}
-                  value={manualSaida}
-                  onChangeText={setManualSaida}
-                  keyboardType="numbers-and-punctuation"
-                  maxLength={5}
-                />
-              </View>
-            </View>
-
-            <View style={styles.pausaRow}>
-              <Text style={styles.inputLabel}>Pausa (min):</Text>
-              <TextInput
-                style={styles.pausaInput}
-                placeholder="60"
-                placeholderTextColor={colors.textSecondary}
-                value={manualPausa}
-                onChangeText={setManualPausa}
-                keyboardType="numeric"
-                maxLength={3}
-              />
-              <Text style={styles.pausaHint}>Almoço, intervalo, etc.</Text>
-            </View>
-
-            <Text style={styles.inputHint}>Horário formato HH:MM • Pausa em minutos</Text>
-
-            <View style={styles.modalActions}>
-              <TouchableOpacity style={styles.cancelBtn} onPress={() => { setShowManualModal(false); setEditingSessionId(null); }}>
-                <Text style={styles.cancelBtnText}>Cancelar</Text>
-              </TouchableOpacity>
-              <TouchableOpacity style={styles.saveBtn} onPress={handleSaveManual}>
-                <Text style={styles.saveBtnText}>{editingSessionId ? 'Salvar' : 'Adicionar'}</Text>
-              </TouchableOpacity>
-            </View>
-          </View>
-        </View>
-      </Modal>
+        date={manualDate}
+        locais={locais.map(l => ({ id: l.id, nome: l.nome, cor: l.cor }))}
+        selectedLocalId={manualLocalId}
+        entrada={manualEntrada}
+        saida={manualSaida}
+        pausa={manualPausa}
+        onLocalChange={setManualLocalId}
+        onEntradaChange={setManualEntrada}
+        onSaidaChange={setManualSaida}
+        onPausaChange={setManualPausa}
+        onSave={handleSaveManual}
+        onClose={() => setShowManualModal(false)}
+      />
 
       <View style={{ height: 32 }} />
     </ScrollView>
@@ -982,17 +716,20 @@ export default function HomeScreen() {
 }
 
 // ============================================
-// ESTILOS
+// STYLES
 // ============================================
 
 const styles = StyleSheet.create({
-  container: { flex: 1, backgroundColor: colors.background },
+  container: { 
+    flex: 1, 
+    backgroundColor: colors.background 
+  },
   content: { 
     padding: 16,
     paddingTop: Platform.OS === 'android' ? (StatusBar.currentHeight || 24) + 16 : 60,
   },
 
-  // HEADER COM LOGO
+  // Header
   header: { 
     flexDirection: 'row', 
     justifyContent: 'space-between', 
@@ -1000,116 +737,70 @@ const styles = StyleSheet.create({
     marginBottom: 16 
   },
   headerLogo: { 
-    width: 80, 
-    height: 28 
+    width: 100, 
+    height: 32 
   },
-  greeting: { fontSize: 18, fontWeight: '600', color: colors.text },
+  greeting: { 
+    fontSize: 16, 
+    fontWeight: '500', 
+    color: colors.textSecondary 
+  },
 
-  timerCard: { padding: 20, marginBottom: 0, alignItems: 'center' },
-  timerCardActive: { backgroundColor: withOpacity(colors.success, 0.1), borderWidth: 1, borderColor: colors.success },
-  timerCardIdle: { backgroundColor: withOpacity(colors.primary, 0.1) },
-  timerLocal: { fontSize: 18, fontWeight: '600', color: colors.text, marginBottom: 8 },
-  timerHint: { fontSize: 14, color: colors.textSecondary, marginBottom: 8 },
-  timer: { fontSize: 48, fontWeight: 'bold', fontVariant: ['tabular-nums'], color: colors.text, marginBottom: 8 },
-  timerPaused: { opacity: 0.4 },
-  timerActions: { flexDirection: 'row', justifyContent: 'center', gap: 12 },
-  actionBtn: { paddingVertical: 10, paddingHorizontal: 20, borderRadius: 20, minWidth: 110, alignItems: 'center' },
-  actionBtnText: { fontSize: 14, fontWeight: '600', color: colors.white },
-  pauseBtn: { backgroundColor: colors.warning },
-  continueBtn: { backgroundColor: colors.success },
-  stopBtn: { backgroundColor: colors.error },
-  startBtn: { backgroundColor: colors.primary },
+  sectionDivider: { 
+    height: 1, 
+    backgroundColor: colors.border, 
+    marginVertical: 16, 
+    marginHorizontal: 20, 
+    opacity: 0.5 
+  },
 
-  pausaContainer: { flexDirection: 'row', alignItems: 'center', justifyContent: 'center', backgroundColor: 'rgba(255,255,255,0.1)', paddingVertical: 8, paddingHorizontal: 16, borderRadius: 20, marginBottom: 16, gap: 8 },
-  pausaLabel: { fontSize: 14, color: colors.textSecondary },
-  pausaTimer: { fontSize: 18, fontWeight: '600', fontVariant: ['tabular-nums'], color: colors.textSecondary },
-  pausaTimerActive: { color: colors.warning },
+  // Selection
+  selectionBar: { 
+    flexDirection: 'row', 
+    justifyContent: 'space-between', 
+    alignItems: 'center', 
+    backgroundColor: colors.primary, 
+    paddingVertical: 8, 
+    paddingHorizontal: 16, 
+    borderRadius: 8, 
+    marginBottom: 12 
+  },
+  selectionText: { 
+    color: colors.black, 
+    fontSize: 14, 
+    fontWeight: '500' 
+  },
+  selectionCancel: { 
+    color: colors.black, 
+    fontSize: 14, 
+    fontWeight: '600' 
+  },
 
-  sectionDivider: { height: 1, backgroundColor: colors.border, marginVertical: 16, marginHorizontal: 20, opacity: 0.5 },
-
-  weekCard: { padding: 16, marginBottom: 0 },
-  calendarHeader: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between' },
-  calendarCenter: { alignItems: 'center' },
-  navBtn: { width: 36, height: 36, borderRadius: 18, backgroundColor: colors.primary, justifyContent: 'center', alignItems: 'center' },
-  navBtnText: { color: colors.black, fontSize: 14, fontWeight: 'bold' },
-  calendarTitle: { fontSize: 14, fontWeight: '500', color: colors.textSecondary, textAlign: 'center' },
-  calendarTotal: { fontSize: 22, fontWeight: 'bold', color: colors.primary, textAlign: 'center' },
-
-  dayRow: { flexDirection: 'row', backgroundColor: colors.card, borderRadius: 10, padding: 10, marginBottom: 6, alignItems: 'center' },
-  dayRowToday: { borderWidth: 2, borderColor: colors.primary },
-  dayRowSelected: { backgroundColor: withOpacity(colors.primary, 0.1), borderWidth: 2, borderColor: colors.primary },
-  
-  checkbox: { width: 24, height: 24, borderRadius: 6, borderWidth: 2, borderColor: colors.border, marginRight: 10, justifyContent: 'center', alignItems: 'center' },
-  checkboxSelected: { backgroundColor: colors.primary, borderColor: colors.primary },
-  checkmark: { color: colors.black, fontSize: 14, fontWeight: 'bold' },
-  
-  selectionBar: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', backgroundColor: colors.primary, paddingVertical: 8, paddingHorizontal: 16, borderRadius: 8, marginBottom: 12 },
-  selectionText: { color: colors.black, fontSize: 14, fontWeight: '500' },
-  selectionCancel: { color: colors.black, fontSize: 14, fontWeight: '600' },
-  
-  dayLeft: { width: 44, alignItems: 'center', marginRight: 10 },
-  dayName: { fontSize: 11, color: colors.textSecondary, fontWeight: '500' },
-  dayNameToday: { color: colors.primary },
-  dayCircle: { width: 30, height: 30, borderRadius: 15, borderWidth: 2, borderColor: colors.border, justifyContent: 'center', alignItems: 'center', marginTop: 2 },
-  dayCircleToday: { borderColor: colors.primary, backgroundColor: colors.primary },
-  dayNumber: { fontSize: 14, fontWeight: 'bold', color: colors.text },
-  dayNumberToday: { color: colors.black },
-  dayRight: { flex: 1 },
-  dayEmpty: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between' },
-  dayEmptyText: { fontSize: 13, color: colors.textSecondary, fontStyle: 'italic' },
-  addBtn: { width: 28, height: 28, borderRadius: 14, backgroundColor: colors.primary, justifyContent: 'center', alignItems: 'center' },
-  addBtnText: { color: colors.black, fontSize: 18, fontWeight: 'bold', marginTop: -2 },
-  dayPreview: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center' },
-  dayPreviewTime: { fontSize: 14, color: colors.text },
-  dayPreviewDuration: { fontSize: 14, fontWeight: '600', color: colors.primary },
-  expandIcon: { fontSize: 10, color: colors.textSecondary, marginLeft: 8 },
-
-  dayExpanded: { marginTop: 8 },
-  
-  reportCard: { backgroundColor: colors.backgroundTertiary, borderRadius: 8, padding: 10, marginBottom: 8 },
-  reportHeader: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', marginBottom: 4 },
-  reportLocal: { fontSize: 14, fontWeight: '600', color: colors.text, flex: 1 },
-  reportActions: { flexDirection: 'row', gap: 8 },
-  actionBtnInline: { padding: 4 },
-  actionBtnInlineText: { fontSize: 16 },
-  reportTime: { fontSize: 15, color: colors.text, marginBottom: 2 },
-  reportTimeAdjusted: { fontSize: 14, color: colors.error, marginBottom: 2 },
-  reportPausa: { fontSize: 13, color: colors.warning, marginBottom: 2 },
-  reportTotal: { fontSize: 16, fontWeight: 'bold', color: colors.primary, marginTop: 4 },
-  
-  dayTotalText: { fontSize: 14, fontWeight: '600', color: colors.primary, textAlign: 'right', marginTop: 4, paddingTop: 8, borderTopWidth: 1, borderTopColor: colors.border },
-
-  exportBtn: { backgroundColor: colors.primary, paddingVertical: 14, borderRadius: 10, alignItems: 'center', marginTop: 12 },
-  exportBtnText: { color: colors.black, fontSize: 15, fontWeight: '600' },
-  exportBtnSecondary: { backgroundColor: colors.backgroundSecondary, paddingVertical: 14, borderRadius: 10, alignItems: 'center', marginTop: 12, borderWidth: 1, borderColor: colors.primary },
-  exportBtnSecondaryText: { color: colors.primary, fontSize: 15, fontWeight: '600' },
-
-  modalOverlay: { flex: 1, backgroundColor: withOpacity(colors.black, 0.7), justifyContent: 'flex-end' },
-  modalContent: { backgroundColor: colors.backgroundSecondary, borderTopLeftRadius: 20, borderTopRightRadius: 20, padding: 20, paddingBottom: Platform.OS === 'ios' ? 34 : 20 },
-  modalTitle: { fontSize: 18, fontWeight: 'bold', color: colors.text, textAlign: 'center' },
-  modalSubtitle: { fontSize: 14, color: colors.textSecondary, textAlign: 'center', marginBottom: 16 },
-  inputLabel: { fontSize: 13, fontWeight: '500', color: colors.text, marginBottom: 6 },
-  localPicker: { flexDirection: 'row', flexWrap: 'wrap', gap: 8, marginBottom: 16 },
-  localOption: { flexDirection: 'row', alignItems: 'center', paddingVertical: 8, paddingHorizontal: 12, borderRadius: 20, backgroundColor: colors.backgroundTertiary, borderWidth: 1, borderColor: colors.border },
-  localOptionActive: { backgroundColor: colors.primary, borderColor: colors.primary },
-  localDot: { width: 10, height: 10, borderRadius: 5, marginRight: 8 },
-  localOptionText: { fontSize: 13, color: colors.text },
-  localOptionTextActive: { color: colors.black, fontWeight: '500' },
-
-  localGpsInfo: { backgroundColor: colors.backgroundTertiary, padding: 12, borderRadius: 8, marginBottom: 16 },
-  localGpsText: { fontSize: 16, fontWeight: '600', color: colors.text, marginBottom: 4 },
-  localGpsHint: { fontSize: 12, color: colors.textSecondary, fontStyle: 'italic' },
-
-  timeRow: { flexDirection: 'row', gap: 16, marginBottom: 12 },
-  timeField: { flex: 1 },
-  timeInput: { borderWidth: 1, borderColor: colors.border, borderRadius: 10, paddingHorizontal: 16, paddingVertical: 12, fontSize: 18, textAlign: 'center', fontWeight: '600', backgroundColor: colors.backgroundTertiary, color: colors.text },
-  pausaRow: { flexDirection: 'row', alignItems: 'center', gap: 12, marginBottom: 8 },
-  pausaInput: { borderWidth: 1, borderColor: colors.border, borderRadius: 10, paddingHorizontal: 16, paddingVertical: 10, fontSize: 16, textAlign: 'center', fontWeight: '600', width: 70, backgroundColor: colors.backgroundTertiary, color: colors.text },
-  pausaHint: { fontSize: 12, color: colors.textSecondary, flex: 1 },
-  inputHint: { fontSize: 12, color: colors.textSecondary, textAlign: 'center', marginBottom: 16 },
-  modalActions: { flexDirection: 'row', gap: 12 },
-  cancelBtn: { flex: 1, paddingVertical: 14, borderRadius: 10, backgroundColor: colors.backgroundTertiary, alignItems: 'center' },
-  cancelBtnText: { fontSize: 15, color: colors.textSecondary, fontWeight: '600' },
-  saveBtn: { flex: 1, paddingVertical: 14, borderRadius: 10, backgroundColor: colors.primary, alignItems: 'center' },
-  saveBtnText: { fontSize: 15, color: colors.black, fontWeight: '600' },
+  // Export
+  exportBtn: { 
+    backgroundColor: colors.primary, 
+    paddingVertical: 14, 
+    borderRadius: 10, 
+    alignItems: 'center', 
+    marginTop: 12 
+  },
+  exportBtnText: { 
+    color: colors.black, 
+    fontSize: 15, 
+    fontWeight: '600' 
+  },
+  exportBtnSecondary: { 
+    backgroundColor: colors.backgroundSecondary, 
+    paddingVertical: 14, 
+    borderRadius: 10, 
+    alignItems: 'center', 
+    marginTop: 12, 
+    borderWidth: 1, 
+    borderColor: colors.primary 
+  },
+  exportBtnSecondaryText: { 
+    color: colors.primary, 
+    fontSize: 15, 
+    fontWeight: '600' 
+  },
 });
