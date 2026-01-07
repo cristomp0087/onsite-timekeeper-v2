@@ -6,9 +6,15 @@
  * - Long press no mapa = pin + modal nome
  * - Long press no círculo = deletar
  * - Clique no círculo = ajustar raio
+ * 
+ * MODIFICADO:
+ * - Caixa de busca branca com texto preto
+ * - Ícone GPS formal (Ionicons)
+ * - Autocomplete com debounce conforme digita
+ * - Busca com bias de localização (prioriza resultados próximos)
  */
 
-import React, { useState, useRef, useEffect } from 'react';
+import React, { useState, useRef, useEffect, useCallback } from 'react';
 import {
   View,
   Text,
@@ -22,11 +28,13 @@ import {
   Keyboard,
   Platform,
   Animated,
+  ActivityIndicator,
 } from 'react-native';
 import MapView, { Marker, Circle, Region, PROVIDER_DEFAULT } from 'react-native-maps';
+import { Ionicons } from '@expo/vector-icons';
 import { colors, withOpacity, getRandomGeofenceColor } from '../../src/constants/colors';
 import { useLocationStore } from '../../src/stores/locationStore';
-import { buscarEndereco, formatarEnderecoResumido } from '../../src/lib/geocoding';
+import { buscarEnderecoAutocomplete, formatarEnderecoResumido } from '../../src/lib/geocoding';
 
 const { width, height } = Dimensions.get('window');
 
@@ -44,10 +52,14 @@ const DEFAULT_RADIUS = 200;
 // Opções de raio disponíveis (mínimo 200m)
 const RADIUS_OPTIONS = [200, 250, 300, 400, 500];
 
+// Debounce delay para autocomplete
+const AUTOCOMPLETE_DELAY = 400;
+
 export default function MapScreen() {
   const mapRef = useRef<MapView>(null);
   const searchInputRef = useRef<TextInput>(null);
   const nameInputRef = useRef<TextInput>(null);
+  const autocompleteTimeout = useRef<NodeJS.Timeout | null>(null);
   
   const {
     locais,
@@ -119,6 +131,54 @@ export default function MapScreen() {
   }, [localizacaoAtual]);
 
   // ============================================
+  // AUTOCOMPLETE
+  // ============================================
+
+  const handleSearchChange = useCallback((text: string) => {
+    setSearchQuery(text);
+    
+    // Cancela busca anterior
+    if (autocompleteTimeout.current) {
+      clearTimeout(autocompleteTimeout.current);
+    }
+
+    // Se texto muito curto, limpa resultados
+    if (text.length < 3) {
+      setSearchResults([]);
+      setShowSearchResults(false);
+      return;
+    }
+
+    // Debounce: espera usuário parar de digitar
+    setIsSearching(true);
+    autocompleteTimeout.current = setTimeout(async () => {
+      try {
+        // Busca com bias de localização atual
+        const results = await buscarEnderecoAutocomplete(
+          text,
+          localizacaoAtual?.latitude,
+          localizacaoAtual?.longitude
+        );
+        setSearchResults(results);
+        setShowSearchResults(results.length > 0);
+      } catch (error) {
+        console.error('Autocomplete error:', error);
+      } finally {
+        setIsSearching(false);
+      }
+    }, AUTOCOMPLETE_DELAY);
+  }, [localizacaoAtual]);
+
+  // Cleanup timeout on unmount
+  useEffect(() => {
+    return () => {
+      if (autocompleteTimeout.current) {
+        clearTimeout(autocompleteTimeout.current);
+      }
+    };
+  }, []);
+
+  // ============================================
   // HELPERS
   // ============================================
 
@@ -187,7 +247,11 @@ export default function MapScreen() {
     
     setIsSearching(true);
     try {
-      const results = await buscarEndereco(searchQuery);
+      const results = await buscarEnderecoAutocomplete(
+        searchQuery,
+        localizacaoAtual?.latitude,
+        localizacaoAtual?.longitude
+      );
       setSearchResults(results);
       setShowSearchResults(true);
     } catch (error) {
@@ -386,24 +450,27 @@ export default function MapScreen() {
         )}
       </MapView>
 
-      {/* CAIXA DE BUSCA */}
+      {/* CAIXA DE BUSCA - FUNDO BRANCO */}
       <View style={styles.searchContainer}>
         <View style={styles.searchBox}>
-          <Text style={styles.searchIcon}>🔍</Text>
+          <Ionicons name="search" size={18} color="#666666" style={styles.searchIcon} />
           <TextInput
             ref={searchInputRef}
             style={styles.searchInput}
             placeholder="Search address..."
-            placeholderTextColor={colors.textSecondary}
+            placeholderTextColor="#999999"
             value={searchQuery}
-            onChangeText={setSearchQuery}
+            onChangeText={handleSearchChange}
             onSubmitEditing={handleSearch}
             returnKeyType="search"
             onFocus={() => setShowSearchResults(searchResults.length > 0)}
           />
-          {searchQuery.length > 0 && (
+          {isSearching && (
+            <ActivityIndicator size="small" color={colors.primary} style={{ marginRight: 8 }} />
+          )}
+          {searchQuery.length > 0 && !isSearching && (
             <TouchableOpacity onPress={() => { setSearchQuery(''); setSearchResults([]); setShowSearchResults(false); }}>
-              <Text style={styles.clearIcon}>✕</Text>
+              <Ionicons name="close-circle" size={20} color="#999999" />
             </TouchableOpacity>
           )}
         </View>
@@ -418,7 +485,7 @@ export default function MapScreen() {
                   style={styles.searchResultItem}
                   onPress={() => handleSelectSearchResult(result)}
                 >
-                  <Text style={styles.searchResultIcon}>📍</Text>
+                  <Ionicons name="location-outline" size={16} color="#666666" style={styles.searchResultIcon} />
                   <Text style={styles.searchResultText} numberOfLines={2}>
                     {formatarEnderecoResumido(result.endereco)}
                   </Text>
@@ -429,9 +496,9 @@ export default function MapScreen() {
         )}
       </View>
 
-      {/* BOTÃO MINHA LOCALIZAÇÃO */}
+      {/* BOTÃO MINHA LOCALIZAÇÃO - ÍCONE FORMAL */}
       <TouchableOpacity style={styles.myLocationButton} onPress={handleGoToMyLocation}>
-        <Text style={styles.buttonIcon}>🎯</Text>
+        <Ionicons name="locate" size={24} color={colors.primary} />
       </TouchableOpacity>
 
       {/* BOTÃO MONITORAMENTO */}
@@ -463,23 +530,111 @@ export default function MapScreen() {
                 onLongPress={() => handleCircleLongPress(local.id, local.nome)}
               >
                 <View style={[styles.localChipDot, { backgroundColor: local.cor }]} />
-                <Text style={styles.localChipText} numberOfLines={1}>{local.nome}</Text>
+                <Text style={styles.localChipText} numberOfLines={1}>
+                  {local.nome}
+                </Text>
               </TouchableOpacity>
             ))}
           </ScrollView>
         </View>
       )}
 
-      {/* DICA quando não tem locais */}
-      {locais.length === 0 && (
+      {/* DICA INICIAL */}
+      {locais.length === 0 && !showNameModal && (
         <View style={styles.hintContainer}>
           <Text style={styles.hintText}>
-            👆 Long press on the map or search an address to add a location
+            🗺️ Long press on the map to add a work location
           </Text>
         </View>
       )}
 
-      {/* MODAL AJUSTAR RAIO */}
+      {/* MODAL DE NOME DO LOCAL */}
+      <Modal
+        visible={showNameModal}
+        transparent
+        animationType="fade"
+        onRequestClose={cancelAndClearPin}
+      >
+        <TouchableOpacity 
+          style={styles.modalOverlay} 
+          activeOpacity={1} 
+          onPress={cancelAndClearPin}
+        >
+          <TouchableOpacity activeOpacity={1} onPress={() => {}}>
+            <Animated.View 
+              style={[
+                styles.nameModal, 
+                { transform: [{ translateX: shakeAnimation }] }
+              ]}
+            >
+              <Text style={styles.nameModalTitle}>📍 New Location</Text>
+              <Text style={styles.nameModalSubtitle}>
+                Give this place a name
+              </Text>
+
+              <TextInput
+                ref={nameInputRef}
+                style={[styles.nameInput, nameInputError && styles.nameInputError]}
+                placeholder="e.g. Main Office, Jobsite A..."
+                placeholderTextColor={colors.textSecondary}
+                value={newLocalName}
+                onChangeText={(text) => {
+                  setNewLocalName(text);
+                  if (nameInputError) setNameInputError(false);
+                }}
+                autoFocus
+                maxLength={40}
+              />
+              {nameInputError && (
+                <Text style={styles.nameInputErrorText}>Please enter a name</Text>
+              )}
+
+              <Text style={styles.radiusSectionTitle}>Detection Radius</Text>
+              <View style={styles.radiusOptionsInline}>
+                {RADIUS_OPTIONS.map((r) => (
+                  <TouchableOpacity
+                    key={r}
+                    style={[
+                      styles.radiusOptionSmall,
+                      newLocalRadius === r && styles.radiusOptionSmallActive,
+                    ]}
+                    onPress={() => setNewLocalRadius(r)}
+                  >
+                    <Text
+                      style={[
+                        styles.radiusOptionSmallText,
+                        newLocalRadius === r && styles.radiusOptionSmallTextActive,
+                      ]}
+                    >
+                      {r}m
+                    </Text>
+                  </TouchableOpacity>
+                ))}
+              </View>
+
+              <View style={styles.nameModalActions}>
+                <TouchableOpacity
+                  style={styles.nameModalCancel}
+                  onPress={cancelAndClearPin}
+                >
+                  <Text style={styles.nameModalCancelText}>Cancel</Text>
+                </TouchableOpacity>
+                <TouchableOpacity
+                  style={[styles.nameModalConfirm, isAdding && styles.nameModalConfirmDisabled]}
+                  onPress={handleConfirmAddLocal}
+                  disabled={isAdding}
+                >
+                  <Text style={styles.nameModalConfirmText}>
+                    {isAdding ? 'Adding...' : 'Add Location'}
+                  </Text>
+                </TouchableOpacity>
+              </View>
+            </Animated.View>
+          </TouchableOpacity>
+        </TouchableOpacity>
+      </Modal>
+
+      {/* MODAL DE AJUSTE DE RAIO */}
       <Modal
         visible={showRadiusModal}
         transparent
@@ -491,133 +646,46 @@ export default function MapScreen() {
           activeOpacity={1}
           onPress={() => setShowRadiusModal(false)}
         >
-          <View style={styles.radiusModal}>
-            <Text style={styles.radiusModalTitle}>
-              📏 Adjust Radius
-            </Text>
-            {selectedLocal && (
+          <TouchableOpacity activeOpacity={1} onPress={() => {}}>
+            <View style={styles.radiusModal}>
+              <Text style={styles.radiusModalTitle}>📏 Adjust Radius</Text>
               <Text style={styles.radiusModalSubtitle}>
-                {selectedLocal.nome} • Current: {selectedLocal.raio}m
+                {selectedLocal?.nome || 'Location'}
               </Text>
-            )}
-            
-            <View style={styles.radiusOptions}>
-              {RADIUS_OPTIONS.map((r) => (
-                <TouchableOpacity
-                  key={r}
-                  style={[
-                    styles.radiusOption,
-                    selectedLocal?.raio === r && styles.radiusOptionActive,
-                  ]}
-                  onPress={() => handleChangeRadius(r)}
-                >
-                  <Text style={[
-                    styles.radiusOptionText,
-                    selectedLocal?.raio === r && styles.radiusOptionTextActive,
-                  ]}>
-                    {r}m
-                  </Text>
-                </TouchableOpacity>
-              ))}
-            </View>
 
-            <TouchableOpacity
-              style={styles.radiusDeleteButton}
-              onPress={() => {
-                setShowRadiusModal(false);
-                if (selectedLocal) {
-                  handleCircleLongPress(selectedLocal.id, selectedLocal.nome);
-                }
-              }}
-            >
-              <Text style={styles.radiusDeleteText}>🗑️ Remove Location</Text>
-            </TouchableOpacity>
-          </View>
-        </TouchableOpacity>
-      </Modal>
-
-      {/* MODAL NOME DO LOCAL */}
-      <Modal
-        visible={showNameModal}
-        transparent
-        animationType="fade"
-        onRequestClose={cancelAndClearPin}
-      >
-        <TouchableOpacity
-          style={styles.modalOverlay}
-          activeOpacity={1}
-          onPress={cancelAndClearPin}
-        >
-          <TouchableOpacity activeOpacity={1} onPress={(e) => e.stopPropagation()}>
-            <View style={styles.nameModal}>
-              <Text style={styles.nameModalTitle}>📍 Location Name</Text>
-              <Text style={styles.nameModalSubtitle}>
-                Enter a name to identify this location
-              </Text>
-              
-              <Animated.View style={{ transform: [{ translateX: shakeAnimation }] }}>
-                <TextInput
-                  ref={nameInputRef}
-                  style={[
-                    styles.nameInput,
-                    nameInputError && styles.nameInputError,
-                  ]}
-                  placeholder="e.g. Office, Construction Site..."
-                  placeholderTextColor={colors.textTertiary}
-                  value={newLocalName}
-                  onChangeText={(text) => {
-                    setNewLocalName(text);
-                    if (nameInputError) setNameInputError(false);
-                  }}
-                  autoFocus
-                  returnKeyType="done"
-                  onSubmitEditing={handleConfirmAddLocal}
-                />
-              </Animated.View>
-              {nameInputError && (
-                <Text style={styles.nameInputErrorText}>Please enter a name</Text>
-              )}
-
-              {/* SELETOR DE RAIO */}
-              <Text style={styles.radiusSectionTitle}>📏 Geofence Radius</Text>
-              <View style={styles.radiusOptionsInline}>
+              <View style={styles.radiusOptions}>
                 {RADIUS_OPTIONS.map((r) => (
                   <TouchableOpacity
                     key={r}
                     style={[
-                      styles.radiusOptionSmall,
-                      newLocalRadius === r && styles.radiusOptionSmallActive,
+                      styles.radiusOption,
+                      selectedLocal?.raio === r && styles.radiusOptionActive,
                     ]}
-                    onPress={() => setNewLocalRadius(r)}
+                    onPress={() => handleChangeRadius(r)}
                   >
-                    <Text style={[
-                      styles.radiusOptionSmallText,
-                      newLocalRadius === r && styles.radiusOptionSmallTextActive,
-                    ]}>
+                    <Text
+                      style={[
+                        styles.radiusOptionText,
+                        selectedLocal?.raio === r && styles.radiusOptionTextActive,
+                      ]}
+                    >
                       {r}m
                     </Text>
                   </TouchableOpacity>
                 ))}
               </View>
-              
-              <View style={styles.nameModalActions}>
-                <TouchableOpacity
-                  style={styles.nameModalCancel}
-                  onPress={cancelAndClearPin}
-                >
-                  <Text style={styles.nameModalCancelText}>Cancel</Text>
-                </TouchableOpacity>
-                
-                <TouchableOpacity
-                  style={[styles.nameModalConfirm, isAdding && styles.nameModalConfirmDisabled]}
-                  onPress={handleConfirmAddLocal}
-                  disabled={isAdding}
-                >
-                  <Text style={styles.nameModalConfirmText}>
-                    {isAdding ? '⏳' : 'Add'}
-                  </Text>
-                </TouchableOpacity>
-              </View>
+
+              <TouchableOpacity
+                style={styles.radiusDeleteButton}
+                onPress={() => {
+                  setShowRadiusModal(false);
+                  if (selectedLocal) {
+                    handleCircleLongPress(selectedLocal.id, selectedLocal.nome);
+                  }
+                }}
+              >
+                <Text style={styles.radiusDeleteText}>🗑️ Remove Location</Text>
+              </TouchableOpacity>
             </View>
           </TouchableOpacity>
         </TouchableOpacity>
@@ -629,40 +697,38 @@ export default function MapScreen() {
 const styles = StyleSheet.create({
   container: {
     flex: 1,
+    backgroundColor: colors.background,
   },
   map: {
     flex: 1,
-    width: '100%',
-    height: '100%',
   },
 
   // Markers
   marker: {
-    width: 40,
-    height: 40,
-    borderRadius: 20,
+    width: 36,
+    height: 36,
+    borderRadius: 18,
     justifyContent: 'center',
     alignItems: 'center',
-    borderWidth: 3,
+    borderWidth: 2,
     borderColor: colors.white,
     shadowColor: colors.black,
     shadowOffset: { width: 0, height: 2 },
     shadowOpacity: 0.3,
     shadowRadius: 3,
-    elevation: 5,
+    elevation: 4,
   },
   tempMarker: {
     backgroundColor: colors.primary,
-    borderStyle: 'dashed',
   },
   markerText: {
-    fontSize: 18,
+    fontSize: 16,
   },
 
-  // Search
+  // Search - FUNDO BRANCO
   searchContainer: {
     position: 'absolute',
-    top: Platform.OS === 'ios' ? 60 : 16,
+    top: Platform.OS === 'ios' ? 60 : 40,
     left: 16,
     right: 16,
     zIndex: 10,
@@ -670,7 +736,7 @@ const styles = StyleSheet.create({
   searchBox: {
     flexDirection: 'row',
     alignItems: 'center',
-    backgroundColor: colors.card,
+    backgroundColor: '#FFFFFF',
     borderRadius: 12,
     paddingHorizontal: 12,
     paddingVertical: 10,
@@ -681,22 +747,16 @@ const styles = StyleSheet.create({
     elevation: 4,
   },
   searchIcon: {
-    fontSize: 16,
-    marginRight: 8,
+    marginRight: 10,
   },
   searchInput: {
     flex: 1,
     fontSize: 16,
-    color: colors.text,
+    color: '#1A1A1A',
     paddingVertical: 0,
   },
-  clearIcon: {
-    fontSize: 16,
-    color: colors.textSecondary,
-    padding: 4,
-  },
   searchResults: {
-    backgroundColor: colors.card,
+    backgroundColor: '#FFFFFF',
     borderRadius: 12,
     marginTop: 8,
     shadowColor: colors.black,
@@ -711,27 +771,26 @@ const styles = StyleSheet.create({
     alignItems: 'center',
     padding: 12,
     borderBottomWidth: 1,
-    borderBottomColor: colors.border,
+    borderBottomColor: '#EEEEEE',
   },
   searchResultIcon: {
-    fontSize: 14,
     marginRight: 10,
   },
   searchResultText: {
     flex: 1,
     fontSize: 14,
-    color: colors.text,
+    color: '#1A1A1A',
   },
 
   // Buttons
   myLocationButton: {
     position: 'absolute',
-    top: Platform.OS === 'ios' ? 130 : 86,
+    top: Platform.OS === 'ios' ? 130 : 110,
     right: 16,
     width: 48,
     height: 48,
     borderRadius: 24,
-    backgroundColor: colors.card,
+    backgroundColor: '#FFFFFF',
     justifyContent: 'center',
     alignItems: 'center',
     shadowColor: colors.black,
@@ -740,13 +799,10 @@ const styles = StyleSheet.create({
     shadowRadius: 4,
     elevation: 4,
   },
-  buttonIcon: {
-    fontSize: 22,
-  },
 
   monitorButton: {
     position: 'absolute',
-    top: Platform.OS === 'ios' ? 130 : 86,
+    top: Platform.OS === 'ios' ? 130 : 110,
     left: 16,
     backgroundColor: colors.card,
     paddingVertical: 10,

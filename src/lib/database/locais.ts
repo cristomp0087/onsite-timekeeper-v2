@@ -2,6 +2,9 @@
  * Database - Locais (Geofences)
  * 
  * CRUD de locais e funções de sync
+ * 
+ * MODIFICADO:
+ * - upsertLocalFromSync não insere locais já deletados no servidor
  */
 
 import { logger } from '../logger';
@@ -196,6 +199,11 @@ export async function marcarLocalSincronizado(id: string): Promise<void> {
 
 /**
  * Upsert de local vindo do Supabase
+ * 
+ * REGRAS:
+ * - Se local JÁ EXISTE localmente → atualiza (inclusive se status='deleted')
+ * - Se local NÃO EXISTE E status='deleted' → NÃO INSERIR (era de outro device, já foi deletado)
+ * - Se local NÃO EXISTE E status='active' → inserir normalmente
  */
 export async function upsertLocalFromSync(local: LocalDB): Promise<void> {
   try {
@@ -205,7 +213,10 @@ export async function upsertLocalFromSync(local: LocalDB): Promise<void> {
     );
 
     if (existente) {
-      // Só atualiza se a versão do servidor é mais recente
+      // ============================================
+      // CASO 1: Local já existe localmente
+      // Atualiza se versão do servidor é mais recente
+      // ============================================
       if (new Date(local.updated_at) > new Date(existente.updated_at)) {
         db.runSync(
           `UPDATE locais SET nome = ?, latitude = ?, longitude = ?, raio = ?, cor = ?, status = ?, 
@@ -213,10 +224,21 @@ export async function upsertLocalFromSync(local: LocalDB): Promise<void> {
           [local.nome, local.latitude, local.longitude, local.raio, local.cor, local.status,
            local.deleted_at, local.updated_at, now(), local.id]
         );
-        logger.debug('sync', `Local atualizado do servidor: ${local.nome}`);
+        logger.debug('sync', `Local atualizado do servidor: ${local.nome} (status: ${local.status})`);
       }
     } else {
-      // Insert novo
+      // ============================================
+      // CASO 2: Local NÃO existe localmente
+      // ============================================
+      
+      // Se já está deletado no servidor, NÃO INSERIR
+      // Isso evita que locais deletados "voltem" após reinstalar o app
+      if (local.status === 'deleted') {
+        logger.debug('sync', `⏭️ Local ignorado (já deletado no servidor): ${local.nome}`);
+        return;
+      }
+      
+      // Insert novo (só se status = 'active')
       db.runSync(
         `INSERT INTO locais (id, user_id, nome, latitude, longitude, raio, cor, status, deleted_at, 
          last_seen_at, created_at, updated_at, synced_at)

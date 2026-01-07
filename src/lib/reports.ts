@@ -9,13 +9,19 @@
  * 📅  04 - jan- 26
  * 📍 Jobsite Avalon
  * *GPS    》12:00 PM → 2:00 PM
- * *Edited 》12:15 PM → 1:50 PM 
- * Pausa: 15min
  * ▸ 1h 45min
+ * 
+ * 📍 Jobsite Norte
+ * *Edited 》2:30 PM → 5:00 PM 
+ * Pausa: 15min
+ * ▸ 2h 15min
  * ════════════════════
- * TOTAL: 1h 45min
+ * TOTAL: 4h 00min
  * OnSite Timekeeper 
  * Ref #   49A2 - 1856
+ * 
+ * MODIFICADO:
+ * - Adiciona linha em branco entre locais diferentes
  */
 
 import { SessaoComputada, formatarDuracao } from './database';
@@ -141,6 +147,9 @@ export function generateReport(
     // 📅 Date header
     lines.push(`📅  ${formatDate(dateKey)}`);
 
+    // Track previous location to add blank line between different locations
+    let previousLocalNome: string | null = null;
+
     // Each session in the day
     for (const sessao of daySessions) {
       const pausaMin = sessao.pausa_minutos || 0;
@@ -150,8 +159,15 @@ export function generateReport(
       const entryTime = formatTimeAMPM(sessao.entrada);
       const exitTime = sessao.saida ? formatTimeAMPM(sessao.saida) : '--:--';
 
+      const currentLocalNome = sessao.local_nome || 'Unknown';
+
+      // Add blank line between different locations
+      if (previousLocalNome !== null && previousLocalNome !== currentLocalNome) {
+        lines.push('');
+      }
+
       // 📍 Location
-      lines.push(`📍 ${sessao.local_nome || 'Unknown'}`);
+      lines.push(`📍 ${currentLocalNome}`);
 
       // Time line - GPS or Edited
       if (isEdited) {
@@ -169,6 +185,7 @@ export function generateReport(
       lines.push(`▸ ${formatarDuracao(duracaoLiquida)}`);
 
       totalMinutes += duracaoLiquida;
+      previousLocalNome = currentLocalNome;
     }
   }
 
