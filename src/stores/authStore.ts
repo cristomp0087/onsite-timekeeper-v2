@@ -5,11 +5,16 @@
  * - Login/Logout
  * - Registro de usuário
  * - Sessão persistente
+ * - NOVO: Registra auth events para auditoria
  */
 
 import { create } from 'zustand';
+import { Platform } from 'react-native';
+import * as Device from 'expo-device';
+import * as Application from 'expo-application';
 import { supabase, isSupabaseConfigured } from '../lib/supabase';
 import { logger } from '../lib/logger';
+import { incrementarTelemetria } from '../lib/database';
 import type { User, Session } from '@supabase/supabase-js';
 
 // ============================================
@@ -32,6 +37,73 @@ interface AuthState {
   getUserId: () => string | null;
   getUserEmail: () => string | null;
   getUserName: () => string | null;
+}
+
+// ============================================
+// AUTH EVENT TYPES
+// ============================================
+
+type AuthEventType = 
+  | 'signup'
+  | 'login'
+  | 'login_failed'
+  | 'logout'
+  | 'session_restored'
+  | 'password_reset_requested';
+
+interface AuthEventData {
+  email?: string;
+  error?: string;
+  method?: string;
+  [key: string]: unknown;
+}
+
+// ============================================
+// HELPER: Registrar Auth Event
+// ============================================
+
+async function registrarAuthEvent(
+  eventType: AuthEventType,
+  userId: string | null,
+  eventData?: AuthEventData
+): Promise<void> {
+  if (!isSupabaseConfigured()) return;
+
+  try {
+    // Coleta info do device
+    const deviceInfo = {
+      model: Device.modelName || 'unknown',
+      brand: Device.brand || 'unknown',
+      os: Platform.OS,
+      osVersion: Platform.Version?.toString() || 'unknown',
+    };
+
+    const appVersion = Application.nativeApplicationVersion || 'unknown';
+    const osVersion = `${Platform.OS} ${Platform.Version}`;
+
+    // Insere na tabela app_events
+    const { error } = await supabase.from('app_events').insert({
+      user_id: userId,
+      event_type: eventType,
+      event_data: {
+        ...eventData,
+        device: deviceInfo,
+        app: 'timekeeper',
+      },
+      app_version: appVersion,
+      os_version: osVersion,
+      device_id: Device.deviceName || null,
+    });
+
+    if (error) {
+      logger.warn('auth', 'Erro ao registrar auth event', { error: error.message });
+    } else {
+      logger.debug('auth', `📊 Auth event registrado: ${eventType}`);
+    }
+  } catch (error) {
+    // Não falha silenciosamente, mas não bloqueia o fluxo
+    logger.warn('auth', 'Exceção ao registrar auth event', { error: String(error) });
+  }
 }
 
 // ============================================
@@ -71,10 +143,19 @@ export const useAuthStore = create<AuthState>((set, get) => ({
           isAuthenticated: true,
           isLoading: false,
         });
+        
         logger.info('auth', '✅ Sessão restaurada', { 
           userId: session.user.id,
           email: session.user.email 
         });
+
+        // Registra evento de sessão restaurada
+        await registrarAuthEvent('session_restored', session.user.id, {
+          email: session.user.email,
+        });
+
+        // Incrementa app_opens na telemetria
+        await incrementarTelemetria(session.user.id, 'app_opens');
       } else {
         set({ isLoading: false });
         logger.info('auth', 'Nenhuma sessão ativa');
@@ -123,6 +204,12 @@ export const useAuthStore = create<AuthState>((set, get) => ({
       if (error) {
         logger.warn('auth', '❌ Falha no login', { error: error.message });
         
+        // Registra falha de login
+        await registrarAuthEvent('login_failed', null, {
+          email,
+          error: error.message,
+        });
+        
         // Traduz mensagens de erro comuns
         let mensagem = error.message;
         if (error.message.includes('Invalid login')) {
@@ -139,6 +226,17 @@ export const useAuthStore = create<AuthState>((set, get) => ({
         session: data.session,
         isAuthenticated: true,
       });
+
+      // Registra login bem-sucedido
+      await registrarAuthEvent('login', data.user?.id || null, {
+        email,
+        method: 'password',
+      });
+
+      // Incrementa app_opens na telemetria
+      if (data.user?.id) {
+        await incrementarTelemetria(data.user.id, 'app_opens');
+      }
 
       logger.info('auth', '✅ Login bem-sucedido', { userId: data.user?.id });
       return { error: null };
@@ -177,6 +275,13 @@ export const useAuthStore = create<AuthState>((set, get) => ({
         return { error: mensagem };
       }
 
+      // Registra signup
+      await registrarAuthEvent('signup', data.user?.id || null, {
+        email,
+        nome,
+        requires_confirmation: !data.session,
+      });
+
       // Supabase pode requerer confirmação de email
       if (data.user && !data.session) {
         logger.info('auth', '📧 Email de confirmação enviado');
@@ -189,6 +294,11 @@ export const useAuthStore = create<AuthState>((set, get) => ({
           session: data.session,
           isAuthenticated: true,
         });
+
+        // Incrementa app_opens na telemetria
+        if (data.user?.id) {
+          await incrementarTelemetria(data.user.id, 'app_opens');
+        }
       }
 
       logger.info('auth', '✅ Registro bem-sucedido', { userId: data.user?.id });
@@ -202,6 +312,14 @@ export const useAuthStore = create<AuthState>((set, get) => ({
   signOut: async () => {
     try {
       logger.info('auth', '🚪 Fazendo logout...');
+
+      const userId = get().user?.id || null;
+      const userEmail = get().user?.email;
+
+      // Registra logout ANTES de limpar o state
+      await registrarAuthEvent('logout', userId, {
+        email: userEmail,
+      });
 
       if (isSupabaseConfigured()) {
         await supabase.auth.signOut();

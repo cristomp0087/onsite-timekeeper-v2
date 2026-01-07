@@ -7,6 +7,8 @@
  * - Geofencing (monitoramento de entrada/saída)
  * - Heartbeat (verificação periódica)
  * - Polling de backup
+ * 
+ * MODIFICADO: Usa telemetria agregada em vez de heartbeat_log individual
  */
 
 import { create } from 'zustand';
@@ -30,11 +32,15 @@ import {
 } from '../lib/location';
 import {
   criarLocal,
-  getLocais,          // ✅ EXISTE
-  removerLocal,       // ✅ EXISTE
+  getLocais,
+  removerLocal,
   atualizarLocal,
   initDatabase,
+  // LEGADO: ainda usamos por enquanto para manter histórico
   registrarHeartbeat,
+  // NOVO: telemetria agregada
+  incrementarTelemetria,
+  incrementarTelemetriaHeartbeat,
   type LocalDB,
 } from '../lib/database';
 import {
@@ -173,6 +179,7 @@ export const useLocationStore = create<LocationState>((set, get) => ({
         permissoes = await solicitarTodasPermissoes();
       }
       set({ permissoes });
+      
       // ============================================
       // CALLBACK DE GEOFENCE NATIVO
       // ============================================
@@ -196,6 +203,7 @@ export const useLocationStore = create<LocationState>((set, get) => ({
 
       // ============================================
       // CALLBACK DE HEARTBEAT (SAFETY NET)
+      // MODIFICADO: Usa telemetria agregada
       // ============================================
       setHeartbeatCallback(async (result: HeartbeatResult) => {
         logger.info('heartbeat', '💓 Processando heartbeat', {
@@ -212,9 +220,14 @@ export const useLocationStore = create<LocationState>((set, get) => ({
         const registroStore = useRegistroStore.getState();
         const sessaoAtual = registroStore.sessaoAtual;
 
-        // 1. Registrar heartbeat no banco
+        // ============================================
+        // MODIFICADO: Registra na telemetria agregada
+        // (registrarHeartbeat também chama incrementarTelemetriaHeartbeat internamente)
+        // ============================================
         if (userId && result.location) {
           try {
+            // Ainda chama registrarHeartbeat por enquanto para manter compatibilidade
+            // Mas a função já incrementa telemetria automaticamente
             await registrarHeartbeat(
               userId,
               result.location.latitude,
@@ -231,7 +244,10 @@ export const useLocationStore = create<LocationState>((set, get) => ({
           }
         }
 
-        // 2. Verificar inconsistências
+        // ============================================
+        // LÓGICA DE NEGÓCIO: Detectar inconsistências
+        // (Isso é o que realmente importa do heartbeat)
+        // ============================================
 
         // Caso A: Tem sessão ativa mas está FORA da fence → saída perdida!
         if (sessaoAtual && sessaoAtual.status === 'ativa' && !result.isInsideFence) {

@@ -7,6 +7,7 @@
  * - Auditoria via sync_log
  * - Geopontos (auditoria GPS)
  * - Validações de negócio
+ * - TELEMETRIA AGREGADA (NOVO)
  */
 
 import * as SQLite from 'expo-sqlite';
@@ -114,6 +115,45 @@ export interface GeopontoDB {
   synced_at: string | null;
 }
 
+// ============================================
+// NOVO: TELEMETRIA DIÁRIA AGREGADA
+// ============================================
+
+export interface TelemetryDailyDB {
+  date: string; // YYYY-MM-DD (PRIMARY KEY junto com user_id)
+  user_id: string;
+  
+  // Uso do app
+  app_opens: number;
+  
+  // Entries
+  manual_entries_count: number;
+  geofence_entries_count: number;
+  
+  // Geofence performance
+  geofence_triggers: number;
+  geofence_accuracy_sum: number; // Para calcular média
+  geofence_accuracy_count: number;
+  
+  // Background & Battery
+  background_location_checks: number;
+  battery_level_sum: number;
+  battery_level_count: number;
+  
+  // Sync health
+  offline_entries_count: number;
+  sync_attempts: number;
+  sync_failures: number;
+  
+  // Heartbeat (agregado do antigo heartbeat_log)
+  heartbeat_count: number;
+  heartbeat_inside_fence_count: number;
+  
+  // Metadata
+  created_at: string;
+  synced_at: string | null;
+}
+
 
 // ============================================
 // INICIALIZAÇÃO
@@ -198,7 +238,7 @@ export async function initDatabase(): Promise<void> {
       )
     `);
 
-     // Tabela de heartbeat logs
+     // Tabela de heartbeat logs (LEGADO - será migrado para telemetry_daily)
     db.execSync(`
       CREATE TABLE IF NOT EXISTS heartbeat_log (
         id TEXT PRIMARY KEY,
@@ -247,6 +287,52 @@ export async function initDatabase(): Promise<void> {
     db.execSync(`CREATE INDEX IF NOT EXISTS idx_geopontos_sessao ON geopontos(sessao_id)`);
     db.execSync(`CREATE INDEX IF NOT EXISTS idx_geopontos_timestamp ON geopontos(timestamp)`);
 
+    // ============================================
+    // NOVO: TABELA TELEMETRY_DAILY (Agregado)
+    // ============================================
+    db.execSync(`
+      CREATE TABLE IF NOT EXISTS telemetry_daily (
+        date TEXT NOT NULL,
+        user_id TEXT NOT NULL,
+        
+        -- Uso do app
+        app_opens INTEGER DEFAULT 0,
+        
+        -- Entries
+        manual_entries_count INTEGER DEFAULT 0,
+        geofence_entries_count INTEGER DEFAULT 0,
+        
+        -- Geofence performance
+        geofence_triggers INTEGER DEFAULT 0,
+        geofence_accuracy_sum REAL DEFAULT 0,
+        geofence_accuracy_count INTEGER DEFAULT 0,
+        
+        -- Background & Battery
+        background_location_checks INTEGER DEFAULT 0,
+        battery_level_sum REAL DEFAULT 0,
+        battery_level_count INTEGER DEFAULT 0,
+        
+        -- Sync health
+        offline_entries_count INTEGER DEFAULT 0,
+        sync_attempts INTEGER DEFAULT 0,
+        sync_failures INTEGER DEFAULT 0,
+        
+        -- Heartbeat agregado
+        heartbeat_count INTEGER DEFAULT 0,
+        heartbeat_inside_fence_count INTEGER DEFAULT 0,
+        
+        -- Metadata
+        created_at TEXT DEFAULT CURRENT_TIMESTAMP,
+        synced_at TEXT,
+        
+        PRIMARY KEY (date, user_id)
+      )
+    `);
+
+    // Índice para telemetry_daily
+    db.execSync(`CREATE INDEX IF NOT EXISTS idx_telemetry_user ON telemetry_daily(user_id)`);
+    db.execSync(`CREATE INDEX IF NOT EXISTS idx_telemetry_synced ON telemetry_daily(synced_at)`);
+
     // Índices para performance
     db.execSync(`CREATE INDEX IF NOT EXISTS idx_locais_user ON locais(user_id)`);
     db.execSync(`CREATE INDEX IF NOT EXISTS idx_locais_status ON locais(status)`);
@@ -277,6 +363,10 @@ export function generateUUID(): string {
 
 function now(): string {
   return new Date().toISOString();
+}
+
+function getToday(): string {
+  return new Date().toISOString().split('T')[0];
 }
 
 /**
@@ -589,6 +679,13 @@ export async function criarRegistroEntrada(params: CriarRegistroParams): Promise
     // Log de sync
     await registrarSyncLog(params.userId, 'registro', id, 'create', null, params);
 
+    // NOVO: Incrementa telemetria
+    if (params.tipo === 'manual') {
+      await incrementarTelemetria(params.userId, 'manual_entries_count');
+    } else {
+      await incrementarTelemetria(params.userId, 'geofence_entries_count');
+    }
+
     logger.info('database', `📥 Registro criado: ${params.localNome}`, { id });
     return id;
   } catch (error) {
@@ -870,6 +967,7 @@ export async function getDbStats(): Promise<{
   registros_abertos: number;
   sync_logs: number;
   geopontos_total: number;
+  telemetry_days: number;
 }> {
   try {
     const locaisTotal = db.getFirstSync<{ count: number }>(`SELECT COUNT(*) as count FROM locais`);
@@ -879,6 +977,7 @@ export async function getDbStats(): Promise<{
     const registrosAbertos = db.getFirstSync<{ count: number }>(`SELECT COUNT(*) as count FROM registros WHERE saida IS NULL`);
     const syncLogs = db.getFirstSync<{ count: number }>(`SELECT COUNT(*) as count FROM sync_log`);
     const geopontosTotal = db.getFirstSync<{ count: number }>(`SELECT COUNT(*) as count FROM geopontos`);
+    const telemetryDays = db.getFirstSync<{ count: number }>(`SELECT COUNT(*) as count FROM telemetry_daily`);
 
     return {
       locais_total: locaisTotal?.count || 0,
@@ -888,6 +987,7 @@ export async function getDbStats(): Promise<{
       registros_abertos: registrosAbertos?.count || 0,
       sync_logs: syncLogs?.count || 0,
       geopontos_total: geopontosTotal?.count || 0,
+      telemetry_days: telemetryDays?.count || 0,
     };
   } catch (error) {
     logger.error('database', 'Erro ao obter stats', { error: String(error) });
@@ -899,6 +999,7 @@ export async function getDbStats(): Promise<{
       registros_abertos: 0,
       sync_logs: 0,
       geopontos_total: 0,
+      telemetry_days: 0,
     };
   }
 }
@@ -914,6 +1015,7 @@ export async function resetDatabase(): Promise<void> {
     db.execSync(`DELETE FROM locais`);
     db.execSync(`DELETE FROM geopontos`);
     db.execSync(`DELETE FROM heartbeat_log`);
+    db.execSync(`DELETE FROM telemetry_daily`);
     logger.info('database', '✅ Database resetado');
   } catch (error) {
     logger.error('database', 'Erro ao resetar database', { error: String(error) });
@@ -922,11 +1024,12 @@ export async function resetDatabase(): Promise<void> {
 }
 
 // ============================================
-// HEARTBEAT LOG
+// HEARTBEAT LOG (LEGADO - manter por enquanto)
 // ============================================
 
 /**
  * Registra um heartbeat
+ * NOTA: Esta função será substituída por incrementarTelemetria no Passo 3
  */
 export async function registrarHeartbeat(
   userId: string,
@@ -950,6 +1053,9 @@ export async function registrarHeartbeat(
       [id, userId, timestamp, latitude, longitude, accuracy, 
        insideFence ? 1 : 0, fenceId, fenceName, sessaoId, batteryLevel, timestamp]
     );
+    
+    // NOVO: Também incrementa telemetria agregada
+    await incrementarTelemetriaHeartbeat(userId, insideFence, batteryLevel);
     
     logger.debug('heartbeat', 'Heartbeat registrado', { id, insideFence, fenceId });
     return id;
@@ -1098,6 +1204,13 @@ export async function registrarGeoponto(
       [id, sessaoId, userId, latitude, longitude, accuracy, 
        timestamp, fonte, dentroFence ? 1 : 0, fenceId, fenceNome, timestamp]
     );
+    
+    // NOVO: Incrementa telemetria de geofence se for trigger
+    if (fonte === 'geofence') {
+      await incrementarTelemetriaGeofence(userId, accuracy);
+    } else if (fonte === 'background') {
+      await incrementarTelemetria(userId, 'background_location_checks');
+    }
     
     logger.debug('database', 'Geoponto registrado', { 
       id, 
@@ -1277,5 +1390,222 @@ export async function marcarGeopontosSincronizados(ids: string[]): Promise<void>
     logger.debug('database', `${ids.length} geopontos marcados como sincronizados`);
   } catch (error) {
     logger.error('database', 'Erro ao marcar geopontos sincronizados', { error: String(error) });
+  }
+}
+
+
+// ============================================
+// NOVO: TELEMETRIA DIÁRIA AGREGADA
+// ============================================
+
+/**
+ * Garante que existe uma row para hoje
+ */
+function ensureTodayTelemetry(userId: string): void {
+  const today = getToday();
+  
+  try {
+    db.runSync(
+      `INSERT OR IGNORE INTO telemetry_daily (date, user_id, created_at) VALUES (?, ?, ?)`,
+      [today, userId, now()]
+    );
+  } catch (error) {
+    // Ignora erro se já existe
+    logger.debug('telemetry', 'Row de hoje já existe ou erro ao criar');
+  }
+}
+
+/**
+ * Incrementa um campo de telemetria do dia
+ */
+export async function incrementarTelemetria(
+  userId: string,
+  campo: 'app_opens' | 'manual_entries_count' | 'geofence_entries_count' | 
+         'geofence_triggers' | 'background_location_checks' | 
+         'offline_entries_count' | 'sync_attempts' | 'sync_failures'
+): Promise<void> {
+  try {
+    ensureTodayTelemetry(userId);
+    const today = getToday();
+    
+    db.runSync(
+      `UPDATE telemetry_daily SET ${campo} = ${campo} + 1, synced_at = NULL WHERE date = ? AND user_id = ?`,
+      [today, userId]
+    );
+    
+    logger.debug('telemetry', `Incrementado: ${campo}`);
+  } catch (error) {
+    logger.error('telemetry', `Erro ao incrementar ${campo}`, { error: String(error) });
+  }
+}
+
+/**
+ * Incrementa telemetria específica de geofence (com accuracy)
+ */
+export async function incrementarTelemetriaGeofence(
+  userId: string,
+  accuracy: number | null
+): Promise<void> {
+  try {
+    ensureTodayTelemetry(userId);
+    const today = getToday();
+    
+    if (accuracy !== null && accuracy > 0) {
+      db.runSync(
+        `UPDATE telemetry_daily SET 
+          geofence_triggers = geofence_triggers + 1,
+          geofence_accuracy_sum = geofence_accuracy_sum + ?,
+          geofence_accuracy_count = geofence_accuracy_count + 1,
+          synced_at = NULL
+        WHERE date = ? AND user_id = ?`,
+        [accuracy, today, userId]
+      );
+    } else {
+      db.runSync(
+        `UPDATE telemetry_daily SET geofence_triggers = geofence_triggers + 1, synced_at = NULL WHERE date = ? AND user_id = ?`,
+        [today, userId]
+      );
+    }
+  } catch (error) {
+    logger.error('telemetry', 'Erro ao incrementar geofence telemetry', { error: String(error) });
+  }
+}
+
+/**
+ * Incrementa telemetria de heartbeat (agregado)
+ */
+export async function incrementarTelemetriaHeartbeat(
+  userId: string,
+  insideFence: boolean,
+  batteryLevel: number | null
+): Promise<void> {
+  try {
+    ensureTodayTelemetry(userId);
+    const today = getToday();
+    
+    if (batteryLevel !== null) {
+      db.runSync(
+        `UPDATE telemetry_daily SET 
+          heartbeat_count = heartbeat_count + 1,
+          heartbeat_inside_fence_count = heartbeat_inside_fence_count + ?,
+          battery_level_sum = battery_level_sum + ?,
+          battery_level_count = battery_level_count + 1,
+          synced_at = NULL
+        WHERE date = ? AND user_id = ?`,
+        [insideFence ? 1 : 0, batteryLevel, today, userId]
+      );
+    } else {
+      db.runSync(
+        `UPDATE telemetry_daily SET 
+          heartbeat_count = heartbeat_count + 1,
+          heartbeat_inside_fence_count = heartbeat_inside_fence_count + ?,
+          synced_at = NULL
+        WHERE date = ? AND user_id = ?`,
+        [insideFence ? 1 : 0, today, userId]
+      );
+    }
+  } catch (error) {
+    logger.error('telemetry', 'Erro ao incrementar heartbeat telemetry', { error: String(error) });
+  }
+}
+
+/**
+ * Busca telemetria de hoje
+ */
+export async function getTelemetriaHoje(userId: string): Promise<TelemetryDailyDB | null> {
+  try {
+    return db.getFirstSync<TelemetryDailyDB>(
+      `SELECT * FROM telemetry_daily WHERE date = ? AND user_id = ?`,
+      [getToday(), userId]
+    );
+  } catch (error) {
+    logger.error('telemetry', 'Erro ao buscar telemetria de hoje', { error: String(error) });
+    return null;
+  }
+}
+
+/**
+ * Busca telemetria para sync (não sincronizada)
+ */
+export async function getTelemetriaParaSync(userId: string): Promise<TelemetryDailyDB[]> {
+  try {
+    return db.getAllSync<TelemetryDailyDB>(
+      `SELECT * FROM telemetry_daily WHERE user_id = ? AND synced_at IS NULL ORDER BY date ASC`,
+      [userId]
+    );
+  } catch (error) {
+    logger.error('telemetry', 'Erro ao buscar telemetria para sync', { error: String(error) });
+    return [];
+  }
+}
+
+/**
+ * Marca telemetria como sincronizada
+ */
+export async function marcarTelemetriaSincronizada(date: string, userId: string): Promise<void> {
+  try {
+    db.runSync(
+      `UPDATE telemetry_daily SET synced_at = ? WHERE date = ? AND user_id = ?`,
+      [now(), date, userId]
+    );
+  } catch (error) {
+    logger.error('telemetry', 'Erro ao marcar telemetria sincronizada', { error: String(error) });
+  }
+}
+
+/**
+ * Limpa telemetria antiga (mais de X dias, só se já sincronizada)
+ */
+export async function limparTelemetriaAntiga(diasManter: number = 7): Promise<number> {
+  try {
+    const cutoff = new Date();
+    cutoff.setDate(cutoff.getDate() - diasManter);
+    const cutoffStr = cutoff.toISOString().split('T')[0];
+    
+    const result = db.runSync(
+      `DELETE FROM telemetry_daily WHERE date < ? AND synced_at IS NOT NULL`,
+      [cutoffStr]
+    );
+    
+    const deletados = result.changes || 0;
+    if (deletados > 0) {
+      logger.info('telemetry', `Telemetria antiga limpa: ${deletados} dias`);
+    }
+    return deletados;
+  } catch (error) {
+    logger.error('telemetry', 'Erro ao limpar telemetria antiga', { error: String(error) });
+    return 0;
+  }
+}
+
+/**
+ * Stats de telemetria para debug
+ */
+export async function getTelemetriaStats(userId: string): Promise<{
+  diasPendentes: number;
+  diasSincronizados: number;
+  hoje: TelemetryDailyDB | null;
+}> {
+  try {
+    const pendentes = db.getFirstSync<{ count: number }>(
+      `SELECT COUNT(*) as count FROM telemetry_daily WHERE user_id = ? AND synced_at IS NULL`,
+      [userId]
+    );
+    
+    const sincronizados = db.getFirstSync<{ count: number }>(
+      `SELECT COUNT(*) as count FROM telemetry_daily WHERE user_id = ? AND synced_at IS NOT NULL`,
+      [userId]
+    );
+    
+    const hoje = await getTelemetriaHoje(userId);
+    
+    return {
+      diasPendentes: pendentes?.count || 0,
+      diasSincronizados: sincronizados?.count || 0,
+      hoje,
+    };
+  } catch (error) {
+    logger.error('telemetry', 'Erro ao obter stats de telemetria', { error: String(error) });
+    return { diasPendentes: 0, diasSincronizados: 0, hoje: null };
   }
 }
