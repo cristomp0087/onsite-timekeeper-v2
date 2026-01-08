@@ -42,9 +42,23 @@ export const styles = StyleSheet.create({
   greeting: { fontSize: 16, fontWeight: '500', color: colors.textSecondary },
 
   // TIMER
-  timerCard: { padding: 20, marginBottom: 0, alignItems: 'center' },
-  timerCardActive: { backgroundColor: colors.primarySoft, borderWidth: 1, borderColor: colors.primary },
-  timerCardIdle: { backgroundColor: colors.backgroundTertiary },
+  timerCard: { 
+    padding: 20, 
+    marginBottom: 0, 
+    alignItems: 'center',
+    backgroundColor: '#0D0D0D',
+    borderWidth: 1,
+    borderColor: '#2A2A2A',
+    borderRadius: 16,
+  },
+  timerCardActive: { 
+    backgroundColor: '#0D0D0D', 
+    borderColor: '#3A3A3A',
+  },
+  timerCardIdle: { 
+    backgroundColor: '#0D0D0D',
+    borderColor: '#2A2A2A',
+  },
   
   locationBadge: {
     backgroundColor: colors.primary,
@@ -65,20 +79,20 @@ export const styles = StyleSheet.create({
   timerActions: { flexDirection: 'row', justifyContent: 'center', gap: 12 },
   actionBtn: { paddingVertical: 12, paddingHorizontal: 24, borderRadius: 24, minWidth: 120, alignItems: 'center' },
   actionBtnText: { fontSize: 14, fontWeight: '600' },
-  // Pause: fundo secundário, texto claro
-  pauseBtn: { backgroundColor: colors.backgroundElevated, borderWidth: 1, borderColor: colors.border },
+  // Pause: dark background, light text
+  pauseBtn: { backgroundColor: '#1A1A1A', borderWidth: 1, borderColor: '#3A3A3A' },
   pauseBtnText: { color: colors.text },
-  // Resume: amarelo
+  // Resume: yellow/amber
   continueBtn: { backgroundColor: colors.primary },
   continueBtnText: { color: colors.buttonPrimaryText },
-  // Stop: vermelho discreto
+  // Stop: red
   stopBtn: { backgroundColor: colors.error },
   stopBtnText: { color: colors.white },
-  // Start: amarelo
+  // Start: yellow/amber
   startBtn: { backgroundColor: colors.primary },
   startBtnText: { color: colors.buttonPrimaryText },
 
-  pausaContainer: { flexDirection: 'row', alignItems: 'center', justifyContent: 'center', backgroundColor: colors.backgroundTertiary, paddingVertical: 8, paddingHorizontal: 16, borderRadius: 20, marginBottom: 16, gap: 8 },
+  pausaContainer: { flexDirection: 'row', alignItems: 'center', justifyContent: 'center', backgroundColor: '#1A1A1A', paddingVertical: 8, paddingHorizontal: 16, borderRadius: 20, marginBottom: 16, gap: 8 },
   pausaLabel: { fontSize: 14, color: colors.textSecondary },
   pausaTimer: { fontSize: 18, fontWeight: '600', fontVariant: ['tabular-nums'], color: colors.textSecondary },
   pausaTimerActive: { color: colors.primary },

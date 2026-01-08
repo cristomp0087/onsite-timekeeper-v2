@@ -13,18 +13,17 @@
  * 
  * 📍 Jobsite Norte
  * *Edited 》2:30 PM → 5:00 PM 
- * Pausa: 15min
+ * Break: 15min
  * ▸ 2h 15min
  * ════════════════════
  * TOTAL: 4h 00min
  * OnSite Timekeeper 
  * Ref #   49A2 - 1856
  * 
- * MODIFICADO:
- * - Adiciona linha em branco entre locais diferentes
+ * REFACTORED: All PT names converted to EN
  */
 
-import { SessaoComputada, formatarDuracao } from './database';
+import { ComputedSession, formatDuration } from './database';
 
 // ============================================
 // CONSTANTS
@@ -74,9 +73,9 @@ function formatTimeAMPM(isoDate: string): string {
  * Generate verification code: "49A2 - 1856"
  * Creates a unique hash based on session data
  */
-function generateRefCode(sessoes: SessaoComputada[], timestamp: string): string {
+function generateRefCode(sessions: ComputedSession[], timestamp: string): string {
   // Create hash from session data
-  const data = sessoes.map(s => `${s.id}|${s.entrada}|${s.duracao_minutos}`).join(';');
+  const data = sessions.map(s => `${s.id}|${s.entry_at}|${s.duration_minutes}`).join(';');
   const base = `${timestamp}|${data}`;
   
   let hash = 0;
@@ -102,15 +101,15 @@ function generateRefCode(sessoes: SessaoComputada[], timestamp: string): string 
  * Used by both single session and multi-day exports
  */
 export function generateReport(
-  sessoes: SessaoComputada[],
+  sessions: ComputedSession[],
   userName?: string
 ): string {
-  if (!sessoes || sessoes.length === 0) {
+  if (!sessions || sessions.length === 0) {
     return 'No sessions found.';
   }
 
   const timestamp = new Date().toISOString();
-  const refCode = generateRefCode(sessoes, timestamp);
+  const refCode = generateRefCode(sessions, timestamp);
   
   const lines: string[] = [];
 
@@ -123,9 +122,9 @@ export function generateReport(
   // ════════════════════════════════════════════
   // GROUP SESSIONS BY DATE
   // ════════════════════════════════════════════
-  const byDate = new Map<string, SessaoComputada[]>();
-  sessoes.forEach(s => {
-    const dateKey = s.entrada.split('T')[0];
+  const byDate = new Map<string, ComputedSession[]>();
+  sessions.forEach(s => {
+    const dateKey = s.entry_at.split('T')[0];
     if (!byDate.has(dateKey)) {
       byDate.set(dateKey, []);
     }
@@ -147,26 +146,26 @@ export function generateReport(
     lines.push(`📅  ${formatDate(dateKey)}`);
 
     // Track previous location to add blank line between different locations
-    let previousLocalNome: string | null = null;
+    let previousLocationName: string | null = null;
 
     // Each session in the day
-    for (const sessao of daySessions) {
-      const pausaMin = sessao.pausa_minutos || 0;
-      const duracaoLiquida = Math.max(0, sessao.duracao_minutos - pausaMin);
-      const isEdited = sessao.editado_manualmente === 1 || sessao.tipo === 'manual';
+    for (const session of daySessions) {
+      const pauseMin = session.pause_minutes || 0;
+      const netDuration = Math.max(0, session.duration_minutes - pauseMin);
+      const isEdited = session.manually_edited === 1 || session.type === 'manual';
       
-      const entryTime = formatTimeAMPM(sessao.entrada);
-      const exitTime = sessao.saida ? formatTimeAMPM(sessao.saida) : '--:--';
+      const entryTime = formatTimeAMPM(session.entry_at);
+      const exitTime = session.exit_at ? formatTimeAMPM(session.exit_at) : '--:--';
 
-      const currentLocalNome = sessao.local_nome || 'Unknown';
+      const currentLocationName = session.location_name || 'Unknown';
 
       // Add blank line between different locations
-      if (previousLocalNome !== null && previousLocalNome !== currentLocalNome) {
+      if (previousLocationName !== null && previousLocationName !== currentLocationName) {
         lines.push('');
       }
 
       // 📍 Location
-      lines.push(`📍 ${currentLocalNome}`);
+      lines.push(`📍 ${currentLocationName}`);
 
       // Time line - GPS or Edited
       if (isEdited) {
@@ -175,16 +174,16 @@ export function generateReport(
         lines.push(`*GPS    》${entryTime} → ${exitTime}`);
       }
 
-      // Pause (if any)
-      if (pausaMin > 0) {
-        lines.push(`Pausa: ${pausaMin}min`);
+      // Break (if any)
+      if (pauseMin > 0) {
+        lines.push(`Break: ${pauseMin}min`);
       }
 
       // Duration subtotal for this session
-      lines.push(`▸ ${formatarDuracao(duracaoLiquida)}`);
+      lines.push(`▸ ${formatDuration(netDuration)}`);
 
-      totalMinutes += duracaoLiquida;
-      previousLocalNome = currentLocalNome;
+      totalMinutes += netDuration;
+      previousLocationName = currentLocationName;
     }
   }
 
@@ -192,7 +191,7 @@ export function generateReport(
   // FOOTER
   // ════════════════════════════════════════════
   lines.push(SEPARATOR_DOUBLE);
-  lines.push(`TOTAL: ${formatarDuracao(totalMinutes)}`);
+  lines.push(`TOTAL: ${formatDuration(totalMinutes)}`);
   lines.push('');
   lines.push(APP_NAME);
   lines.push(`Ref #   ${refCode}`);
@@ -201,130 +200,164 @@ export function generateReport(
 }
 
 // ============================================
-// LEGACY FUNCTION ALIASES (for compatibility)
+// SINGLE SESSION REPORT
 // ============================================
 
 /**
  * Generate single session report
- * Called after clock out via "Compartilhar" button
+ * Called after clock out via "Share" button
  */
-export function gerarRelatorioSessao(
-  sessao: SessaoComputada,
-  nomeUsuario?: string
+export function generateSessionReport(
+  session: ComputedSession,
+  userName?: string
 ): string {
-  return generateReport([sessao], nomeUsuario);
+  return generateReport([session], userName);
 }
+
+// ============================================
+// COMPLETE REPORT
+// ============================================
 
 /**
  * Generate complete report for period
- * Called from weekly export and compartilharRelatorio
+ * Called from weekly export and share report
  */
-export function gerarRelatorioCompleto(
-  sessoes: SessaoComputada[],
-  nomeUsuario?: string
+export function generateCompleteReport(
+  sessions: ComputedSession[],
+  userName?: string
 ): string {
-  return generateReport(sessoes, nomeUsuario);
+  return generateReport(sessions, userName);
 }
+
+// ============================================
+// SUMMARY
+// ============================================
 
 /**
  * Generate quick summary (for preview in UI)
  */
-export function gerarResumo(sessoes: SessaoComputada[]): string {
-  if (!sessoes || sessoes.length === 0) {
+export function generateSummary(sessions: ComputedSession[]): string {
+  if (!sessions || sessions.length === 0) {
     return 'No sessions selected.';
   }
 
-  const totalMinutes = sessoes.reduce((acc, s) => {
-    const pausa = s.pausa_minutos || 0;
-    return acc + Math.max(0, s.duracao_minutos - pausa);
+  const totalMinutes = sessions.reduce((acc, s) => {
+    const pause = s.pause_minutes || 0;
+    return acc + Math.max(0, s.duration_minutes - pause);
   }, 0);
 
-  return `${sessoes.length} session(s) • ${formatarDuracao(totalMinutes)}`;
+  return `${sessions.length} session(s) • ${formatDuration(totalMinutes)}`;
 }
 
 // ============================================
 // METADATA (for programmatic use)
 // ============================================
 
-export interface RelatorioMetadata {
-  geradoEm: string;
+export interface ReportMetadata {
+  generatedAt: string;
   refCode: string;
-  totalSessoes: number;
-  totalMinutos: number;
+  totalSessions: number;
+  totalMinutes: number;
 }
 
-export function getRelatorioMetadata(
-  sessoes: SessaoComputada[],
-): RelatorioMetadata {
+export function getReportMetadata(
+  sessions: ComputedSession[],
+): ReportMetadata {
   const timestamp = new Date().toISOString();
-  const refCode = generateRefCode(sessoes, timestamp);
+  const refCode = generateRefCode(sessions, timestamp);
   
-  const totalMinutos = sessoes.reduce((acc, s) => {
-    const pausa = s.pausa_minutos || 0;
-    return acc + Math.max(0, s.duracao_minutos - pausa);
+  const totalMinutes = sessions.reduce((acc, s) => {
+    const pause = s.pause_minutes || 0;
+    return acc + Math.max(0, s.duration_minutes - pause);
   }, 0);
 
   return {
-    geradoEm: timestamp,
+    generatedAt: timestamp,
     refCode,
-    totalSessoes: sessoes.length,
-    totalMinutos,
+    totalSessions: sessions.length,
+    totalMinutes,
   };
 }
 
 // ============================================
-// GROUPING HELPERS (kept for compatibility)
+// GROUPING HELPERS
 // ============================================
 
-export interface RelatorioAgrupado {
-  localNome: string;
-  sessoes: {
-    data: string;
-    entrada: string;
-    saida: string;
-    duracao: number;
-    pausaMinutos: number;
-    duracaoLiquida: number;
-    editado: boolean;
+export interface GroupedReport {
+  locationName: string;
+  sessions: {
+    date: string;
+    entry: string;
+    exit: string;
+    duration: number;
+    pauseMinutes: number;
+    netDuration: number;
+    edited: boolean;
   }[];
-  subtotalBruto: number;
-  subtotalPausa: number;
-  subtotalLiquido: number;
+  subtotalGross: number;
+  subtotalPause: number;
+  subtotalNet: number;
 }
 
-export function agruparSessoesPorLocal(sessoes: SessaoComputada[]): RelatorioAgrupado[] {
-  const grupos: Record<string, RelatorioAgrupado> = {};
+export function groupSessionsByLocation(sessions: ComputedSession[]): GroupedReport[] {
+  const groups: Record<string, GroupedReport> = {};
 
-  for (const sessao of sessoes) {
-    const localNome = sessao.local_nome || 'Unknown';
+  for (const session of sessions) {
+    const locationName = session.location_name || 'Unknown';
 
-    if (!grupos[localNome]) {
-      grupos[localNome] = {
-        localNome,
-        sessoes: [],
-        subtotalBruto: 0,
-        subtotalPausa: 0,
-        subtotalLiquido: 0,
+    if (!groups[locationName]) {
+      groups[locationName] = {
+        locationName,
+        sessions: [],
+        subtotalGross: 0,
+        subtotalPause: 0,
+        subtotalNet: 0,
       };
     }
 
-    const pausaMinutos = sessao.pausa_minutos || 0;
-    const duracaoLiquida = Math.max(0, sessao.duracao_minutos - pausaMinutos);
+    const pauseMinutes = session.pause_minutes || 0;
+    const netDuration = Math.max(0, session.duration_minutes - pauseMinutes);
 
-    grupos[localNome].sessoes.push({
-      data: sessao.entrada.split('T')[0],
-      entrada: formatTimeAMPM(sessao.entrada),
-      saida: sessao.saida ? formatTimeAMPM(sessao.saida) : 'In progress',
-      duracao: sessao.duracao_minutos,
-      pausaMinutos,
-      duracaoLiquida,
-      editado: sessao.editado_manualmente === 1,
+    groups[locationName].sessions.push({
+      date: session.entry_at.split('T')[0],
+      entry: formatTimeAMPM(session.entry_at),
+      exit: session.exit_at ? formatTimeAMPM(session.exit_at) : 'In progress',
+      duration: session.duration_minutes,
+      pauseMinutes,
+      netDuration,
+      edited: session.manually_edited === 1,
     });
 
-    grupos[localNome].subtotalBruto += sessao.duracao_minutos;
-    grupos[localNome].subtotalPausa += pausaMinutos;
-    grupos[localNome].subtotalLiquido += duracaoLiquida;
+    groups[locationName].subtotalGross += session.duration_minutes;
+    groups[locationName].subtotalPause += pauseMinutes;
+    groups[locationName].subtotalNet += netDuration;
   }
 
-  return Object.values(grupos).sort((a, b) => b.subtotalLiquido - a.subtotalLiquido);
+  return Object.values(groups).sort((a, b) => b.subtotalNet - a.subtotalNet);
 }
+
+// ============================================
+// DEPRECATED ALIASES (backward compatibility)
+// Remove after all consumers updated
+// ============================================
+
+/** @deprecated Use generateSessionReport instead */
+export const gerarRelatorioSessao = generateSessionReport;
+
+/** @deprecated Use generateCompleteReport instead */
+export const gerarRelatorioCompleto = generateCompleteReport;
+
+/** @deprecated Use generateSummary instead */
+export const gerarResumo = generateSummary;
+
+/** @deprecated Use ReportMetadata instead */
+export type RelatorioMetadata = ReportMetadata;
+
+/** @deprecated Use getReportMetadata instead */
+export const getRelatorioMetadata = getReportMetadata;
+
+/** @deprecated Use GroupedReport instead */
+export type RelatorioAgrupado = GroupedReport;
+
+/** @deprecated Use groupSessionsByLocation instead */
+export const agruparSessoesPorLocal = groupSessionsByLocation;

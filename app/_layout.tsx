@@ -1,5 +1,7 @@
 /**
- * Root Layout - OnSite Timekeeper
+ * Root Layout - OnSite Timekeeper v2
+ * 
+ * SIMPLIFIED: No fullscreen popup (GeofenceAlert removed)
  */
 
 import React, { useEffect, useState, useRef } from 'react';
@@ -15,10 +17,10 @@ import { colors } from '../src/constants/colors';
 import { logger } from '../src/lib/logger';
 import { initDatabase } from '../src/lib/database';
 import { ErrorBoundary } from '../src/components/ErrorBoundary';
-import { GeofenceAlert } from '../src/components/GeofenceAlert';
+// REMOVED: GeofenceAlert no longer needed
 import { useAuthStore } from '../src/stores/authStore';
 import { useLocationStore } from '../src/stores/locationStore';
-import { useRegistroStore } from '../src/stores/registroStore';
+import { useRecordStore } from '../src/stores/recordStore';
 import { useWorkSessionStore } from '../src/stores/workSessionStore';
 import { useSyncStore } from '../src/stores/syncStore';
 import { useSettingsStore } from '../src/stores/settingsStore';
@@ -33,17 +35,15 @@ export default function RootLayout() {
 
   const { isAuthenticated, isLoading: authLoading, initialize: initAuth } = useAuthStore();
   
-  // Ref to prevent double initialization
   const initRef = useRef(false);
 
-  // Function to initialize stores (reusable)
   const initializeStores = async () => {
     if (storesInitialized) return;
     
     logger.info('boot', '📦 Initializing stores...');
     
     try {
-      await useRegistroStore.getState().initialize();
+      await useRecordStore.getState().initialize();
       await useLocationStore.getState().initialize();
       await useWorkSessionStore.getState().initialize();
       await useSyncStore.getState().initialize();
@@ -55,26 +55,21 @@ export default function RootLayout() {
     }
   };
 
-  // Initial bootstrap
   useEffect(() => {
     async function bootstrap() {
       if (initRef.current) return;
       initRef.current = true;
       
-      logger.info('boot', '🚀 Starting OnSite Timekeeper...');
+      logger.info('boot', '🚀 Starting OnSite Timekeeper v2...');
 
       try {
-        // 1. Database
         await initDatabase();
         logger.info('boot', '✅ Database initialized');
 
-        // 2. Settings
         await useSettingsStore.getState().loadSettings();
 
-        // 3. Auth
         await initAuth();
 
-        // 4. If already authenticated, initialize stores
         if (useAuthStore.getState().isAuthenticated) {
           await initializeStores();
         }
@@ -91,7 +86,6 @@ export default function RootLayout() {
     bootstrap();
   }, []);
 
-  // Initialize stores when user LOGS IN
   useEffect(() => {
     if (isReady && isAuthenticated && !storesInitialized) {
       logger.info('boot', '🔑 Login detected - initializing stores...');
@@ -99,7 +93,6 @@ export default function RootLayout() {
     }
   }, [isReady, isAuthenticated, storesInitialized]);
 
-  // Auth-based navigation - ONLY NAVIGATE WHEN READY
   useEffect(() => {
     if (!isReady || authLoading) return;
 
@@ -112,7 +105,6 @@ export default function RootLayout() {
     }
   }, [isReady, authLoading, isAuthenticated, segments]);
 
-  // Loading while bootstrap runs
   if (!isReady || authLoading) {
     return (
       <View style={styles.loadingContainer}>
@@ -129,8 +121,7 @@ export default function RootLayout() {
         <Stack.Screen name="(auth)" />
         <Stack.Screen name="(tabs)" />
       </Stack>
-      
-      <GeofenceAlert />
+      {/* REMOVED: <GeofenceAlert /> - Now using notification bar only */}
     </ErrorBoundary>
   );
 }

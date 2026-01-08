@@ -1,15 +1,15 @@
 /**
  * Home Screen - OnSite Timekeeper
  * 
- * Tela principal com timer e calendário de sessões.
+ * Main screen with timer and session calendar.
  * 
- * Estrutura refatorada:
- * - index.tsx         → JSX (este arquivo)
- * - _index.hooks.ts   → Lógica (states, effects, handlers)
- * - _index.helpers.ts → Funções utilitárias
- * - _index.styles.ts  → StyleSheet
+ * Refactored structure:
+ * - index.tsx         → JSX (this file)
+ * - hooks.ts          → Logic (states, effects, handlers)
+ * - helpers.ts        → Utility functions
+ * - styles.ts         → StyleSheet
  * 
- * NOTA: Arquivos começam com _ para não aparecer na tab bar
+ * REFACTORED: All PT names removed, using EN stores/hooks
  */
 
 import React, { useRef } from 'react';
@@ -26,49 +26,49 @@ import {
 
 import { Card } from '../../src/components/ui/Button';
 import { colors } from '../../src/constants/colors';
-import type { SessaoComputada } from '../../src/lib/database';
-import type { LocalDeTrabalho } from '../../src/stores/locationStore';
+import type { ComputedSession } from '../../src/lib/database';
+import type { WorkLocation } from '../../src/stores/locationStore';
 
 import { useHomeScreen } from '../../src/screens/home/hooks';
 import { styles } from '../../src/screens/home/styles';
-import { DIAS_SEMANA_SHORT, type DiaCalendario } from '../../src/screens/home/helpers';
+import { WEEKDAYS_SHORT, type CalendarDay } from '../../src/screens/home/helpers';
 
 // ============================================
 // COMPONENT
 // ============================================
 
 export default function HomeScreen() {
-  // Refs para auto-pulo entre campos de tempo
-  const entradaMRef = useRef<TextInput>(null);
-  const saidaHRef = useRef<TextInput>(null);
-  const saidaMRef = useRef<TextInput>(null);
-  const pausaRef = useRef<TextInput>(null);
+  // Refs for auto-jump between time fields
+  const entryMRef = useRef<TextInput>(null);
+  const exitHRef = useRef<TextInput>(null);
+  const exitMRef = useRef<TextInput>(null);
+  const pauseRef = useRef<TextInput>(null);
 
   const {
     // Data
     userName,
-    locais,
-    sessaoAtual,
-    ultimaSessaoFinalizada,
-    localAtivo,
-    podeRecomecar,
-    isGeofencingAtivo,
+    locations,
+    currentSession,
+    lastFinishedSession,
+    activeLocation,
+    canRestart,
+    isGeofencingActive,
     
     // Timer
-    cronometro,
+    timer,
     isPaused,
-    pausaCronometro,
+    pauseTimer,
     
     // Calendar
     viewMode,
     setViewMode,
-    mesAtual,
-    inicioSemana,
-    fimSemana,
-    diasCalendarioSemana,
-    diasCalendarioMes,
-    totalSemanaMinutos,
-    totalMesMinutos,
+    currentMonth,
+    weekStart,
+    weekEnd,
+    weekCalendarDays,
+    monthCalendarDays,
+    weekTotalMinutes,
+    monthTotalMinutes,
     expandedDay,
     
     // Selection
@@ -81,29 +81,29 @@ export default function HomeScreen() {
     setShowManualModal,
     showSessionFinishedModal,
     manualDate,
-    manualLocalId,
-    setManualLocalId,
-    // Campos separados HH:MM
-    manualEntradaH,
-    setManualEntradaH,
-    manualEntradaM,
-    setManualEntradaM,
-    manualSaidaH,
-    setManualSaidaH,
-    manualSaidaM,
-    setManualSaidaM,
-    manualPausa,
-    setManualPausa,
+    manualLocationId,
+    setManualLocationId,
+    // Separate HH:MM fields
+    manualEntryH,
+    setManualEntryH,
+    manualEntryM,
+    setManualEntryM,
+    manualExitH,
+    setManualExitH,
+    manualExitM,
+    setManualExitM,
+    manualPause,
+    setManualPause,
     
     // Refresh
     refreshing,
     onRefresh,
     
     // Timer handlers
-    handlePausar,
-    handleContinuar,
-    handleParar,
-    handleRecomecar,
+    handlePause,
+    handleResume,
+    handleStop,
+    handleRestart,
     
     // Navigation handlers
     goToPreviousWeek,
@@ -116,8 +116,8 @@ export default function HomeScreen() {
     // Day handlers
     handleDayPress,
     handleDayLongPress,
-    getSessoesForDay,
-    getTotalMinutosForDay,
+    getSessionsForDay,
+    getTotalMinutesForDay,
     
     // Modal handlers
     openManualEntry,
@@ -131,7 +131,7 @@ export default function HomeScreen() {
     formatDateRange,
     formatMonthYear,
     formatTimeAMPM,
-    formatarDuracao,
+    formatDuration,
     isToday,
     getDayKey,
   } = useHomeScreen();
@@ -141,12 +141,12 @@ export default function HomeScreen() {
   // ============================================
 
   const renderDayReport = (date: Date) => {
-    const sessoesDodia = getSessoesForDay(date);
-    const sessoesFinalizadas = sessoesDodia.filter((s: SessaoComputada) => s.saida);
+    const daySessions = getSessionsForDay(date);
+    const finishedSessions = daySessions.filter((s: ComputedSession) => s.exit_at);
     const dayKey = getDayKey(date);
-    const totalMinutos = getTotalMinutosForDay(date);
+    const totalMinutes = getTotalMinutesForDay(date);
 
-    if (sessoesFinalizadas.length === 0) return null;
+    if (finishedSessions.length === 0) return null;
 
     return (
       <View style={styles.dayReportContainer}>
@@ -165,7 +165,7 @@ export default function HomeScreen() {
               </TouchableOpacity>
               <TouchableOpacity 
                 style={styles.actionBtnInline} 
-                onPress={() => handleDeleteDay(dayKey, sessoesDodia)}
+                onPress={() => handleDeleteDay(dayKey, daySessions)}
               >
                 <Text style={styles.actionBtnInlineText}>🗑️</Text>
               </TouchableOpacity>
@@ -173,39 +173,39 @@ export default function HomeScreen() {
           </View>
 
           {/* Sessions */}
-          {sessoesFinalizadas.map((sessao: SessaoComputada) => {
-            const isManual = sessao.tipo === 'manual';
-            const isAjustado = sessao.editado_manualmente === 1 && !isManual;
-            const pausaMin = sessao.pausa_minutos || 0;
-            const totalLiquido = Math.max(0, sessao.duracao_minutos - pausaMin);
+          {finishedSessions.map((session: ComputedSession) => {
+            const isManual = session.type === 'manual';
+            const isEdited = session.manually_edited === 1 && !isManual;
+            const pauseMin = session.pause_minutes || 0;
+            const netTotal = Math.max(0, session.duration_minutes - pauseMin);
             
             return (
-              <View key={sessao.id} style={styles.reportSession}>
-                <Text style={styles.reportLocal}>📍 {sessao.local_nome}</Text>
+              <View key={session.id} style={styles.reportSession}>
+                <Text style={styles.reportLocal}>📍 {session.location_name}</Text>
                 
-                {isManual || isAjustado ? (
+                {isManual || isEdited ? (
                   <Text style={styles.reportTimeEdited}>
-                    *Edited 》{formatTimeAMPM(sessao.entrada)} → {formatTimeAMPM(sessao.saida!)}
+                    *Edited 》{formatTimeAMPM(session.entry_at)} → {formatTimeAMPM(session.exit_at!)}
                   </Text>
                 ) : (
                   <Text style={styles.reportTimeGps}>
-                    *GPS    》{formatTimeAMPM(sessao.entrada)} → {formatTimeAMPM(sessao.saida!)}
+                    *GPS    》{formatTimeAMPM(session.entry_at)} → {formatTimeAMPM(session.exit_at!)}
                   </Text>
                 )}
                 
-                {pausaMin > 0 && (
-                  <Text style={styles.reportPausa}>Pausa: {pausaMin}min</Text>
+                {pauseMin > 0 && (
+                  <Text style={styles.reportPausa}>Break: {pauseMin}min</Text>
                 )}
                 
-                <Text style={styles.reportSessionTotal}>▸ {formatarDuracao(totalLiquido)}</Text>
+                <Text style={styles.reportSessionTotal}>▸ {formatDuration(netTotal)}</Text>
               </View>
             );
           })}
 
           {/* Day total (only if multiple sessions) */}
-          {sessoesFinalizadas.length > 1 && (
+          {finishedSessions.length > 1 && (
             <View style={styles.reportDayTotal}>
-              <Text style={styles.reportDayTotalText}>Day Total: {formatarDuracao(totalMinutos)}</Text>
+              <Text style={styles.reportDayTotalText}>Day Total: {formatDuration(totalMinutes)}</Text>
             </View>
           )}
         </View>
@@ -235,53 +235,53 @@ export default function HomeScreen() {
       {/* TIMER */}
       <Card style={[
         styles.timerCard,
-        sessaoAtual && styles.timerCardActive,
-        podeRecomecar && styles.timerCardIdle
+        currentSession && styles.timerCardActive,
+        canRestart && styles.timerCardIdle
       ].filter(Boolean) as ViewStyle[]}>
-        {sessaoAtual ? (
+        {currentSession ? (
           <>
             <View style={styles.locationBadge}>
-              <Text style={styles.locationBadgeText}>{sessaoAtual.local_nome}</Text>
+              <Text style={styles.locationBadgeText}>{currentSession.location_name}</Text>
             </View>
             
-            <Text style={[styles.timer, isPaused && styles.timerPaused]}>{cronometro}</Text>
+            <Text style={[styles.timer, isPaused && styles.timerPaused]}>{timer}</Text>
 
             <View style={styles.pausaContainer}>
               <Text style={styles.pausaLabel}>⏸️ Break:</Text>
               <Text style={[styles.pausaTimer, isPaused && styles.pausaTimerActive]}>
-                {pausaCronometro}
+                {pauseTimer}
               </Text>
             </View>
 
             <View style={styles.timerActions}>
               {isPaused ? (
-                <TouchableOpacity style={[styles.actionBtn, styles.continueBtn]} onPress={handleContinuar}>
+                <TouchableOpacity style={[styles.actionBtn, styles.continueBtn]} onPress={handleResume}>
                   <Text style={[styles.actionBtnText, styles.continueBtnText]}>▶ Resume</Text>
                 </TouchableOpacity>
               ) : (
-                <TouchableOpacity style={[styles.actionBtn, styles.pauseBtn]} onPress={handlePausar}>
+                <TouchableOpacity style={[styles.actionBtn, styles.pauseBtn]} onPress={handlePause}>
                   <Text style={[styles.actionBtnText, styles.pauseBtnText]}>⏸ Pause</Text>
                 </TouchableOpacity>
               )}
-              <TouchableOpacity style={[styles.actionBtn, styles.stopBtn]} onPress={handleParar}>
+              <TouchableOpacity style={[styles.actionBtn, styles.stopBtn]} onPress={handleStop}>
                 <Text style={[styles.actionBtnText, styles.stopBtnText]}>⏹ End</Text>
               </TouchableOpacity>
             </View>
           </>
-        ) : podeRecomecar ? (
+        ) : canRestart ? (
           <>
             <View style={styles.locationBadge}>
-              <Text style={styles.locationBadgeText}>{localAtivo?.nome}</Text>
+              <Text style={styles.locationBadgeText}>{activeLocation?.name}</Text>
             </View>
             <Text style={styles.timer}>00:00:00</Text>
-            <TouchableOpacity style={[styles.actionBtn, styles.startBtn]} onPress={handleRecomecar}>
+            <TouchableOpacity style={[styles.actionBtn, styles.startBtn]} onPress={handleRestart}>
               <Text style={[styles.actionBtnText, styles.startBtnText]}>▶ Start</Text>
             </TouchableOpacity>
           </>
         ) : (
           <>
             <Text style={styles.timerHint}>
-              {isGeofencingAtivo ? 'Waiting for location entry...' : 'Monitoring inactive'}
+              {isGeofencingActive ? 'Waiting for location entry...' : 'Monitoring inactive'}
             </Text>
             <Text style={styles.timer}>--:--:--</Text>
           </>
@@ -306,12 +306,12 @@ export default function HomeScreen() {
           >
             <Text style={styles.calendarTitle}>
               {viewMode === 'week' 
-                ? formatDateRange(inicioSemana, fimSemana)
-                : formatMonthYear(mesAtual)
+                ? formatDateRange(weekStart, weekEnd)
+                : formatMonthYear(currentMonth)
               }
             </Text>
             <Text style={styles.calendarTotal}>
-              {formatarDuracao(viewMode === 'week' ? totalSemanaMinutos : totalMesMinutos)}
+              {formatDuration(viewMode === 'week' ? weekTotalMinutes : monthTotalMinutes)}
             </Text>
           </TouchableOpacity>
 
@@ -355,12 +355,12 @@ export default function HomeScreen() {
       {/* WEEK VIEW */}
       {viewMode === 'week' && (
         <>
-          {diasCalendarioSemana.map((dia: DiaCalendario) => {
-            const dayKey = getDayKey(dia.data);
+          {weekCalendarDays.map((day: CalendarDay) => {
+            const dayKey = getDayKey(day.date);
             const isExpanded = expandedDay === dayKey && !selectionMode;
-            const hasSessoes = dia.sessoes.length > 0;
-            const isDiaHoje = isToday(dia.data);
-            const hasAtiva = dia.sessoes.some((s: SessaoComputada) => !s.saida);
+            const hasSessions = day.sessions.length > 0;
+            const isTodayDate = isToday(day.date);
+            const hasActive = day.sessions.some((s: ComputedSession) => !s.exit_at);
             const isSelected = selectedDays.has(dayKey);
 
             return (
@@ -368,53 +368,53 @@ export default function HomeScreen() {
                 <TouchableOpacity
                   style={[
                     styles.dayRow,
-                    isDiaHoje && styles.dayRowToday,
+                    isTodayDate && styles.dayRowToday,
                     isSelected && styles.dayRowSelected,
                   ]}
-                  onPress={() => handleDayPress(dayKey, hasSessoes)}
-                  onLongPress={() => handleDayLongPress(dayKey, hasSessoes)}
+                  onPress={() => handleDayPress(dayKey, hasSessions)}
+                  onLongPress={() => handleDayLongPress(dayKey, hasSessions)}
                   delayLongPress={400}
                   activeOpacity={0.7}
                 >
-                  {selectionMode && hasSessoes && (
+                  {selectionMode && hasSessions && (
                     <View style={[styles.checkbox, isSelected && styles.checkboxSelected]}>
                       {isSelected && <Text style={styles.checkmark}>✓</Text>}
                     </View>
                   )}
 
                   <View style={styles.dayLeft}>
-                    <Text style={[styles.dayName, isDiaHoje && styles.dayNameToday]}>{dia.diaSemana}</Text>
-                    <View style={[styles.dayCircle, isDiaHoje && styles.dayCircleToday]}>
-                      <Text style={[styles.dayNumber, isDiaHoje && styles.dayNumberToday]}>{dia.diaNumero}</Text>
+                    <Text style={[styles.dayName, isTodayDate && styles.dayNameToday]}>{day.weekday}</Text>
+                    <View style={[styles.dayCircle, isTodayDate && styles.dayCircleToday]}>
+                      <Text style={[styles.dayNumber, isTodayDate && styles.dayNumberToday]}>{day.dayNumber}</Text>
                     </View>
                   </View>
 
                   <View style={styles.dayRight}>
-                    {!hasSessoes ? (
+                    {!hasSessions ? (
                       <View style={styles.dayEmpty}>
                         <Text style={styles.dayEmptyText}>No record</Text>
                         {!selectionMode && (
-                          <TouchableOpacity style={styles.addBtn} onPress={() => openManualEntry(dia.data)}>
+                          <TouchableOpacity style={styles.addBtn} onPress={() => openManualEntry(day.date)}>
                             <Text style={styles.addBtnText}>+</Text>
                           </TouchableOpacity>
                         )}
                       </View>
                     ) : (
                       <View style={styles.dayPreview}>
-                        <Text style={[styles.dayPreviewDuration, hasAtiva && { color: colors.success }]}>
-                          {hasAtiva ? 'In progress' : formatarDuracao(dia.totalMinutos)}
+                        <Text style={[styles.dayPreviewDuration, hasActive && { color: colors.success }]}>
+                          {hasActive ? 'In progress' : formatDuration(day.totalMinutes)}
                         </Text>
                       </View>
                     )}
                   </View>
 
-                  {hasSessoes && !selectionMode && (
+                  {hasSessions && !selectionMode && (
                     <Text style={styles.expandIcon}>{isExpanded ? '▲' : '▼'}</Text>
                   )}
                 </TouchableOpacity>
 
                 {/* Expanded day report */}
-                {isExpanded && renderDayReport(dia.data)}
+                {isExpanded && renderDayReport(day.date)}
               </View>
             );
           })}
@@ -426,47 +426,47 @@ export default function HomeScreen() {
         <View style={styles.monthContainer}>
           {/* Weekday headers */}
           <View style={styles.monthWeekHeader}>
-            {DIAS_SEMANA_SHORT.map((d: string, i: number) => (
+            {WEEKDAYS_SHORT.map((d: string, i: number) => (
               <Text key={i} style={styles.monthWeekHeaderText}>{d}</Text>
             ))}
           </View>
 
           {/* Days grid */}
           <View style={styles.monthGrid}>
-            {diasCalendarioMes.map((date: Date | null, index: number) => {
+            {monthCalendarDays.map((date: Date | null, index: number) => {
               if (!date) {
                 return <View key={`empty-${index}`} style={styles.monthDayEmpty} />;
               }
 
               const dayKey = getDayKey(date);
-              const sessoesDia = getSessoesForDay(date);
-              const hasSessoes = sessoesDia.length > 0;
-              const isDiaHoje = isToday(date);
+              const daySessions = getSessionsForDay(date);
+              const hasSessions = daySessions.length > 0;
+              const isTodayDate = isToday(date);
               const isSelected = selectedDays.has(dayKey);
-              const totalMinutos = getTotalMinutosForDay(date);
+              const totalMinutes = getTotalMinutesForDay(date);
 
               return (
                 <TouchableOpacity
                   key={dayKey}
                   style={[
                     styles.monthDay,
-                    isDiaHoje && styles.monthDayToday,
+                    isTodayDate && styles.monthDayToday,
                     isSelected && styles.monthDaySelected,
-                    hasSessoes && styles.monthDayHasData,
+                    hasSessions && styles.monthDayHasData,
                   ]}
-                  onPress={() => handleDayPress(dayKey, hasSessoes)}
-                  onLongPress={() => handleDayLongPress(dayKey, hasSessoes)}
+                  onPress={() => handleDayPress(dayKey, hasSessions)}
+                  onLongPress={() => handleDayLongPress(dayKey, hasSessions)}
                   delayLongPress={400}
                   activeOpacity={0.7}
                 >
                   <Text style={[
                     styles.monthDayNumber,
-                    isDiaHoje && styles.monthDayNumberToday,
+                    isTodayDate && styles.monthDayNumberToday,
                     isSelected && styles.monthDayNumberSelected,
                   ]}>
                     {date.getDate()}
                   </Text>
-                  {hasSessoes && totalMinutos > 0 && (
+                  {hasSessions && totalMinutes > 0 && (
                     <View style={styles.monthDayIndicator} />
                   )}
                 </TouchableOpacity>
@@ -512,15 +512,15 @@ export default function HomeScreen() {
 
             <Text style={styles.inputLabel}>Location:</Text>
             <View style={styles.localPicker}>
-              {locais.map((local: LocalDeTrabalho) => (
+              {locations.map((location: WorkLocation) => (
                 <TouchableOpacity
-                  key={local.id}
-                  style={[styles.localOption, manualLocalId === local.id && styles.localOptionActive]}
-                  onPress={() => setManualLocalId(local.id)}
+                  key={location.id}
+                  style={[styles.localOption, manualLocationId === location.id && styles.localOptionActive]}
+                  onPress={() => setManualLocationId(location.id)}
                 >
-                  <View style={[styles.localDot, { backgroundColor: local.cor }]} />
-                  <Text style={[styles.localOptionText, manualLocalId === local.id && styles.localOptionTextActive]}>
-                    {local.nome}
+                  <View style={[styles.localDot, { backgroundColor: location.color }]} />
+                  <Text style={[styles.localOptionText, manualLocationId === location.id && styles.localOptionTextActive]}>
+                    {location.name}
                   </Text>
                 </TouchableOpacity>
               ))}
@@ -534,11 +534,11 @@ export default function HomeScreen() {
                     style={styles.timeInputSmall}
                     placeholder="08"
                     placeholderTextColor={colors.textSecondary}
-                    value={manualEntradaH}
+                    value={manualEntryH}
                     onChangeText={(t) => {
                       const clean = t.replace(/[^0-9]/g, '').slice(0, 2);
-                      setManualEntradaH(clean);
-                      if (clean.length === 2) entradaMRef.current?.focus();
+                      setManualEntryH(clean);
+                      if (clean.length === 2) entryMRef.current?.focus();
                     }}
                     keyboardType="number-pad"
                     maxLength={2}
@@ -546,15 +546,15 @@ export default function HomeScreen() {
                   />
                   <Text style={styles.timeSeparator}>:</Text>
                   <TextInput
-                    ref={entradaMRef}
+                    ref={entryMRef}
                     style={styles.timeInputSmall}
                     placeholder="00"
                     placeholderTextColor={colors.textSecondary}
-                    value={manualEntradaM}
+                    value={manualEntryM}
                     onChangeText={(t) => {
                       const clean = t.replace(/[^0-9]/g, '').slice(0, 2);
-                      setManualEntradaM(clean);
-                      if (clean.length === 2) saidaHRef.current?.focus();
+                      setManualEntryM(clean);
+                      if (clean.length === 2) exitHRef.current?.focus();
                     }}
                     keyboardType="number-pad"
                     maxLength={2}
@@ -566,15 +566,15 @@ export default function HomeScreen() {
                 <Text style={styles.inputLabel}>Exit:</Text>
                 <View style={styles.timeInputRow}>
                   <TextInput
-                    ref={saidaHRef}
+                    ref={exitHRef}
                     style={styles.timeInputSmall}
                     placeholder="17"
                     placeholderTextColor={colors.textSecondary}
-                    value={manualSaidaH}
+                    value={manualExitH}
                     onChangeText={(t) => {
                       const clean = t.replace(/[^0-9]/g, '').slice(0, 2);
-                      setManualSaidaH(clean);
-                      if (clean.length === 2) saidaMRef.current?.focus();
+                      setManualExitH(clean);
+                      if (clean.length === 2) exitMRef.current?.focus();
                     }}
                     keyboardType="number-pad"
                     maxLength={2}
@@ -582,15 +582,15 @@ export default function HomeScreen() {
                   />
                   <Text style={styles.timeSeparator}>:</Text>
                   <TextInput
-                    ref={saidaMRef}
+                    ref={exitMRef}
                     style={styles.timeInputSmall}
                     placeholder="00"
                     placeholderTextColor={colors.textSecondary}
-                    value={manualSaidaM}
+                    value={manualExitM}
                     onChangeText={(t) => {
                       const clean = t.replace(/[^0-9]/g, '').slice(0, 2);
-                      setManualSaidaM(clean);
-                      if (clean.length === 2) pausaRef.current?.focus();
+                      setManualExitM(clean);
+                      if (clean.length === 2) pauseRef.current?.focus();
                     }}
                     keyboardType="number-pad"
                     maxLength={2}
@@ -603,12 +603,12 @@ export default function HomeScreen() {
             <View style={styles.pausaRow}>
               <Text style={styles.inputLabel}>Break:</Text>
               <TextInput
-                ref={pausaRef}
+                ref={pauseRef}
                 style={styles.pausaInput}
                 placeholder="60"
                 placeholderTextColor={colors.textSecondary}
-                value={manualPausa}
-                onChangeText={(t) => setManualPausa(t.replace(/[^0-9]/g, '').slice(0, 3))}
+                value={manualPause}
+                onChangeText={(t) => setManualPause(t.replace(/[^0-9]/g, '').slice(0, 3))}
                 keyboardType="number-pad"
                 maxLength={3}
                 selectTextOnFocus
@@ -632,7 +632,7 @@ export default function HomeScreen() {
 
       {/* SESSION FINISHED MODAL */}
       <Modal
-        visible={showSessionFinishedModal && !!ultimaSessaoFinalizada}
+        visible={showSessionFinishedModal && !!lastFinishedSession}
         transparent
         animationType="fade"
         onRequestClose={handleDismissSessionModal}
@@ -642,13 +642,13 @@ export default function HomeScreen() {
             <Text style={styles.sessionModalEmoji}>✅</Text>
             <Text style={styles.sessionModalTitle}>Session Finished</Text>
             
-            {ultimaSessaoFinalizada && (
+            {lastFinishedSession && (
               <>
                 <Text style={styles.sessionModalLocation}>
-                  📍 {ultimaSessaoFinalizada.local_nome}
+                  📍 {lastFinishedSession.location_name}
                 </Text>
                 <Text style={styles.sessionModalDuration}>
-                  {formatarDuracao(ultimaSessaoFinalizada.duracao_minutos)}
+                  {formatDuration(lastFinishedSession.duration_minutes)}
                 </Text>
               </>
             )}

@@ -1,10 +1,11 @@
 /**
- * Settings Store - OnSite Timekeeper
+ * Settings Store - OnSite Timekeeper v2
  * 
- * Gerencia configurações do usuário:
- * - Preferências de notificação
- * - Auto-start/stop
- * - Timeouts
+ * User preferences:
+ * - Timer configurations (entry, exit, pause, adjustment)
+ * - Notification preferences
+ * - Auto-action toggles
+ * - Geofencing defaults
  */
 
 import { create } from 'zustand';
@@ -12,23 +13,29 @@ import AsyncStorage from '@react-native-async-storage/async-storage';
 import { logger } from '../lib/logger';
 
 // ============================================
-// TIPOS
+// TYPES
 // ============================================
 
 interface SettingsState {
-  // Notificações
+  // Timer configurations (NEW)
+  entryTimeoutMinutes: number;      // Minutes before auto-start on entry (default: 5)
+  exitTimeoutSeconds: number;       // Seconds before auto-stop on exit (default: 15)
+  returnTimeoutMinutes: number;     // Minutes before auto-resume on return (default: 5)
+  pauseLimitMinutes: number;        // Max pause duration before auto-stop (default: 30)
+  exitAdjustmentMinutes: number;    // Minutes to deduct on auto-exit (default: 10)
+
+  // Notifications
   notificacoesAtivas: boolean;
   somNotificacao: boolean;
   vibracaoNotificacao: boolean;
   
-  // Auto-ação
+  // Auto-action toggles
   autoStartHabilitado: boolean;
   autoStopHabilitado: boolean;
-  timeoutAutoAcao: number; // em segundos (default: 30)
   
   // Geofencing
-  raioDefault: number; // em metros (default: 100)
-  distanciaMinimaLocais: number; // em metros (default: 50)
+  raioDefault: number;              // Default radius in meters
+  distanciaMinimaLocais: number;    // Minimum distance between locations
   
   // Debug
   devMonitorHabilitado: boolean;
@@ -38,6 +45,13 @@ interface SettingsState {
   saveSettings: () => Promise<void>;
   updateSetting: <K extends keyof SettingsState>(key: K, value: SettingsState[K]) => void;
   resetSettings: () => Promise<void>;
+  
+  // Computed getters for workSessionStore
+  getEntryTimeoutMs: () => number;
+  getExitTimeoutMs: () => number;
+  getReturnTimeoutMs: () => number;
+  getPauseLimitMs: () => number;
+  getExitAdjustment: () => number;
 }
 
 // ============================================
@@ -45,14 +59,27 @@ interface SettingsState {
 // ============================================
 
 const DEFAULT_SETTINGS = {
+  // Timer configurations
+  entryTimeoutMinutes: 5,
+  exitTimeoutSeconds: 15,
+  returnTimeoutMinutes: 5,
+  pauseLimitMinutes: 30,
+  exitAdjustmentMinutes: 10,
+
+  // Notifications
   notificacoesAtivas: true,
   somNotificacao: true,
   vibracaoNotificacao: true,
+  
+  // Auto-action
   autoStartHabilitado: true,
   autoStopHabilitado: true,
-  timeoutAutoAcao: 30,
+  
+  // Geofencing
   raioDefault: 100,
   distanciaMinimaLocais: 50,
+  
+  // Debug
   devMonitorHabilitado: __DEV__,
 };
 
@@ -70,11 +97,12 @@ export const useSettingsStore = create<SettingsState>((set, get) => ({
       const stored = await AsyncStorage.getItem(STORAGE_KEY);
       if (stored) {
         const parsed = JSON.parse(stored);
+        // Merge with defaults to handle new settings added in updates
         set({ ...DEFAULT_SETTINGS, ...parsed });
-        logger.info('boot', '⚙️ Configurações carregadas');
+        logger.info('boot', '⚙️ Settings loaded');
       }
     } catch (error) {
-      logger.error('database', 'Erro ao carregar configurações', { error: String(error) });
+      logger.error('database', 'Error loading settings', { error: String(error) });
     }
   },
 
@@ -82,20 +110,33 @@ export const useSettingsStore = create<SettingsState>((set, get) => ({
     try {
       const state = get();
       const toSave = {
+        // Timer configurations
+        entryTimeoutMinutes: state.entryTimeoutMinutes,
+        exitTimeoutSeconds: state.exitTimeoutSeconds,
+        returnTimeoutMinutes: state.returnTimeoutMinutes,
+        pauseLimitMinutes: state.pauseLimitMinutes,
+        exitAdjustmentMinutes: state.exitAdjustmentMinutes,
+        
+        // Notifications
         notificacoesAtivas: state.notificacoesAtivas,
         somNotificacao: state.somNotificacao,
         vibracaoNotificacao: state.vibracaoNotificacao,
+        
+        // Auto-action
         autoStartHabilitado: state.autoStartHabilitado,
         autoStopHabilitado: state.autoStopHabilitado,
-        timeoutAutoAcao: state.timeoutAutoAcao,
+        
+        // Geofencing
         raioDefault: state.raioDefault,
         distanciaMinimaLocais: state.distanciaMinimaLocais,
+        
+        // Debug
         devMonitorHabilitado: state.devMonitorHabilitado,
       };
       await AsyncStorage.setItem(STORAGE_KEY, JSON.stringify(toSave));
-      logger.debug('database', 'Configurações salvas');
+      logger.debug('database', 'Settings saved');
     } catch (error) {
-      logger.error('database', 'Erro ao salvar configurações', { error: String(error) });
+      logger.error('database', 'Error saving settings', { error: String(error) });
     }
   },
 
@@ -107,6 +148,30 @@ export const useSettingsStore = create<SettingsState>((set, get) => ({
   resetSettings: async () => {
     set(DEFAULT_SETTINGS);
     await AsyncStorage.removeItem(STORAGE_KEY);
-    logger.info('database', 'Configurações resetadas');
+    logger.info('database', 'Settings reset to defaults');
+  },
+
+  // ============================================
+  // COMPUTED GETTERS (for workSessionStore)
+  // ============================================
+  
+  getEntryTimeoutMs: () => {
+    return get().entryTimeoutMinutes * 60 * 1000;
+  },
+
+  getExitTimeoutMs: () => {
+    return get().exitTimeoutSeconds * 1000;
+  },
+
+  getReturnTimeoutMs: () => {
+    return get().returnTimeoutMinutes * 60 * 1000;
+  },
+
+  getPauseLimitMs: () => {
+    return get().pauseLimitMinutes * 60 * 1000;
+  },
+
+  getExitAdjustment: () => {
+    return -get().exitAdjustmentMinutes; // Negative for time deduction
   },
 }));

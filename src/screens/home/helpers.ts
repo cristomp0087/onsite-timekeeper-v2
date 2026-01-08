@@ -1,39 +1,41 @@
 /**
  * Home Screen Helpers - OnSite Timekeeper
  * 
- * Funções utilitárias para manipulação de datas e calendário
+ * Utility functions for date and calendar manipulation
+ * 
+ * REFACTORED: All PT names removed, English only
  */
 
-import type { SessaoComputada } from '../../lib/database';
+import type { ComputedSession } from '../../lib/database';
 
 // ============================================
-// CONSTANTES
+// CONSTANTS
 // ============================================
 
-export const DIAS_SEMANA = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'];
-export const DIAS_SEMANA_SHORT = ['S', 'M', 'T', 'W', 'T', 'F', 'S'];
+export const WEEKDAYS = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'];
+export const WEEKDAYS_SHORT = ['S', 'M', 'T', 'W', 'T', 'F', 'S'];
 export const MONTH_NAMES = [
   'January', 'February', 'March', 'April', 'May', 'June',
   'July', 'August', 'September', 'October', 'November', 'December'
 ];
 
 // ============================================
-// TIPOS
+// TYPES
 // ============================================
 
-export interface DiaCalendario {
-  data: Date;
-  diaSemana: string;
-  diaNumero: number;
-  sessoes: SessaoComputada[];
-  totalMinutos: number;
+export interface CalendarDay {
+  date: Date;
+  weekday: string;
+  dayNumber: number;
+  sessions: ComputedSession[];
+  totalMinutes: number;
 }
 
 // ============================================
-// FUNÇÕES DE SEMANA
+// WEEK FUNCTIONS
 // ============================================
 
-export function getInicioSemana(date: Date): Date {
+export function getWeekStart(date: Date): Date {
   const d = new Date(date);
   const day = d.getDay();
   const diff = d.getDate() - day;
@@ -42,26 +44,26 @@ export function getInicioSemana(date: Date): Date {
   return d;
 }
 
-export function getFimSemana(date: Date): Date {
-  const inicio = getInicioSemana(date);
-  const fim = new Date(inicio);
-  fim.setDate(fim.getDate() + 6);
-  fim.setHours(23, 59, 59, 999);
-  return fim;
+export function getWeekEnd(date: Date): Date {
+  const start = getWeekStart(date);
+  const end = new Date(start);
+  end.setDate(end.getDate() + 6);
+  end.setHours(23, 59, 59, 999);
+  return end;
 }
 
 // ============================================
-// FUNÇÕES DE MÊS
+// MONTH FUNCTIONS
 // ============================================
 
-export function getInicioMes(date: Date): Date {
+export function getMonthStart(date: Date): Date {
   const d = new Date(date);
   d.setDate(1);
   d.setHours(0, 0, 0, 0);
   return d;
 }
 
-export function getFimMes(date: Date): Date {
+export function getMonthEnd(date: Date): Date {
   const d = new Date(date);
   d.setMonth(d.getMonth() + 1);
   d.setDate(0);
@@ -70,19 +72,19 @@ export function getFimMes(date: Date): Date {
 }
 
 export function getMonthCalendarDays(date: Date): (Date | null)[] {
-  const inicio = getInicioMes(date);
-  const fim = getFimMes(date);
+  const start = getMonthStart(date);
+  const end = getMonthEnd(date);
   const days: (Date | null)[] = [];
   
-  // Preenche dias vazios no início
-  const firstDayOfWeek = inicio.getDay();
+  // Fill empty days at the start
+  const firstDayOfWeek = start.getDay();
   for (let i = 0; i < firstDayOfWeek; i++) {
     days.push(null);
   }
   
-  // Preenche dias do mês
-  const current = new Date(inicio);
-  while (current <= fim) {
+  // Fill days of the month
+  const current = new Date(start);
+  while (current <= end) {
     days.push(new Date(current));
     current.setDate(current.getDate() + 1);
   }
@@ -91,12 +93,12 @@ export function getMonthCalendarDays(date: Date): (Date | null)[] {
 }
 
 // ============================================
-// FORMATAÇÃO
+// FORMATTING
 // ============================================
 
-export function formatDateRange(inicio: Date, fim: Date): string {
+export function formatDateRange(start: Date, end: Date): string {
   const formatDay = (d: Date) => d.toLocaleDateString('en-US', { day: '2-digit', month: 'short' });
-  return `${formatDay(inicio)} - ${formatDay(fim)}`;
+  return `${formatDay(start)} - ${formatDay(end)}`;
 }
 
 export function formatMonthYear(date: Date): string {
@@ -114,7 +116,7 @@ export function formatTimeAMPM(iso: string): string {
 }
 
 // ============================================
-// COMPARAÇÃO DE DATAS
+// DATE COMPARISON
 // ============================================
 
 export function isSameDay(d1: Date, d2: Date): boolean {
@@ -130,3 +132,26 @@ export function isToday(date: Date): boolean {
 export function getDayKey(date: Date): string {
   return `${date.getFullYear()}-${(date.getMonth() + 1).toString().padStart(2, '0')}-${date.getDate().toString().padStart(2, '0')}`;
 }
+
+// ============================================
+// DEPRECATED ALIASES (backward compatibility)
+// Remove after all components updated
+// ============================================
+
+/** @deprecated Use WEEKDAYS instead */
+export const DIAS_SEMANA = WEEKDAYS;
+
+/** @deprecated Use CalendarDay instead */
+export type DiaCalendario = CalendarDay;
+
+/** @deprecated Use getWeekStart instead */
+export const getInicioSemana = getWeekStart;
+
+/** @deprecated Use getWeekEnd instead */
+export const getFimSemana = getWeekEnd;
+
+/** @deprecated Use getMonthStart instead */
+export const getInicioMes = getMonthStart;
+
+/** @deprecated Use getMonthEnd instead */
+export const getFimMes = getMonthEnd;

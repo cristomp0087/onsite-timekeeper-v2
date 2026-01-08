@@ -1,32 +1,32 @@
 /**
- * Serviço de Localização - OnSite Timekeeper
+ * Location Service - OnSite Timekeeper
  * 
- * - Permissões de GPS (foreground e background)
- * - Localização atual (alta precisão)
- * - Watch de posição em tempo real
- * - Geofencing nativo via expo-location
+ * - GPS permissions (foreground and background)
+ * - Current location (high accuracy)
+ * - Real-time position watch
+ * - Native geofencing via expo-location
  * - Background location updates
  */
 
 import * as Location from 'expo-location';
 import { logger } from './logger';
 
-// Nomes das tasks de background (devem ser únicos)
+// Background task names (must be unique)
 export const LOCATION_TASK_NAME = 'onsite-background-location';
 export const GEOFENCE_TASK_NAME = 'onsite-geofence';
 
 
 // ============================================
-// TIPOS
+// TYPES
 // ============================================
 
-export interface Coordenadas {
+export interface Coordinates {
   latitude: number;
   longitude: number;
 }
 
-export interface LocalizacaoResult {
-  coords: Coordenadas;
+export interface LocationResult {
+  coords: Coordinates;
   accuracy: number | null;
   timestamp: number;
 }
@@ -40,19 +40,19 @@ export interface GeofenceRegion {
   notifyOnExit?: boolean;
 }
 
-export interface PermissoesStatus {
+export interface PermissionsStatus {
   foreground: boolean;
   background: boolean;
 }
 
 // ============================================
-// PERMISSÕES
+// PERMISSIONS
 // ============================================
 
 /**
- * Verifica status atual das permissões
+ * Check current permission status
  */
-export async function verificarPermissoes(): Promise<PermissoesStatus> {
+export async function checkPermissions(): Promise<PermissionsStatus> {
   try {
     const foreground = await Location.getForegroundPermissionsAsync();
     const background = await Location.getBackgroundPermissionsAsync();
@@ -62,83 +62,83 @@ export async function verificarPermissoes(): Promise<PermissoesStatus> {
       background: background.status === 'granted',
     };
   } catch (error) {
-    logger.error('gps', 'Erro ao verificar permissões', { error: String(error) });
+    logger.error('gps', 'Error checking permissions', { error: String(error) });
     return { foreground: false, background: false };
   }
 }
 
 /**
- * Solicita permissão de localização em primeiro plano
+ * Request foreground location permission
  */
-export async function solicitarPermissaoForeground(): Promise<boolean> {
+export async function requestForegroundPermission(): Promise<boolean> {
   try {
-    logger.info('gps', 'Solicitando permissão de localização (foreground)');
+    logger.info('gps', 'Requesting location permission (foreground)');
     const { status } = await Location.requestForegroundPermissionsAsync();
     const granted = status === 'granted';
-    logger.info('gps', `Permissão foreground: ${granted ? '✅' : '❌'}`);
+    logger.info('gps', `Foreground permission: ${granted ? '✅' : '❌'}`);
     return granted;
   } catch (error) {
-    logger.error('gps', 'Erro ao solicitar permissão foreground', { error: String(error) });
+    logger.error('gps', 'Error requesting foreground permission', { error: String(error) });
     return false;
   }
 }
 
 /**
- * Solicita permissão de localização em segundo plano
- * IMPORTANTE: Deve ser chamada APÓS obter permissão foreground
+ * Request background location permission
+ * IMPORTANT: Must be called AFTER obtaining foreground permission
  */
-export async function solicitarPermissaoBackground(): Promise<boolean> {
+export async function requestBackgroundPermission(): Promise<boolean> {
   try {
-    logger.info('gps', 'Solicitando permissão de localização (background)');
+    logger.info('gps', 'Requesting location permission (background)');
     const { status } = await Location.requestBackgroundPermissionsAsync();
     const granted = status === 'granted';
-    logger.info('gps', `Permissão background: ${granted ? '✅' : '❌'}`);
+    logger.info('gps', `Background permission: ${granted ? '✅' : '❌'}`);
     return granted;
   } catch (error) {
-    logger.error('gps', 'Erro ao solicitar permissão background', { error: String(error) });
+    logger.error('gps', 'Error requesting background permission', { error: String(error) });
     return false;
   }
 }
 
 /**
- * Solicita todas as permissões necessárias em sequência
+ * Request all necessary permissions in sequence
  */
-export async function solicitarTodasPermissoes(): Promise<PermissoesStatus> {
-  const foreground = await solicitarPermissaoForeground();
+export async function requestAllPermissions(): Promise<PermissionsStatus> {
+  const foreground = await requestForegroundPermission();
   
   if (!foreground) {
     return { foreground: false, background: false };
   }
 
-  const background = await solicitarPermissaoBackground();
+  const background = await requestBackgroundPermission();
   return { foreground, background };
 }
 
 // ============================================
-// LOCALIZAÇÃO ATUAL
+// CURRENT LOCATION
 // ============================================
 
 /**
- * Obtém localização atual com alta precisão
+ * Get current location with high accuracy
  */
-export async function obterLocalizacaoAtual(): Promise<LocalizacaoResult | null> {
+export async function getCurrentLocation(): Promise<LocationResult | null> {
   try {
-    const permissoes = await verificarPermissoes();
-    if (!permissoes.foreground) {
-      const granted = await solicitarPermissaoForeground();
+    const permissions = await checkPermissions();
+    if (!permissions.foreground) {
+      const granted = await requestForegroundPermission();
       if (!granted) {
-        logger.warn('gps', 'Sem permissão para obter localização');
+        logger.warn('gps', 'No permission to get location');
         return null;
       }
     }
 
-    logger.debug('gps', 'Obtendo localização atual...');
+    logger.debug('gps', 'Getting current location...');
 
     const location = await Location.getCurrentPositionAsync({
       accuracy: Location.Accuracy.High,
     });
 
-    const result: LocalizacaoResult = {
+    const result: LocationResult = {
       coords: {
         latitude: location.coords.latitude,
         longitude: location.coords.longitude,
@@ -147,7 +147,7 @@ export async function obterLocalizacaoAtual(): Promise<LocalizacaoResult | null>
       timestamp: location.timestamp,
     };
 
-    logger.info('gps', '📍 Localização obtida', {
+    logger.info('gps', '📍 Location obtained', {
       lat: result.coords.latitude.toFixed(6),
       lng: result.coords.longitude.toFixed(6),
       accuracy: result.accuracy ? `${result.accuracy.toFixed(0)}m` : 'N/A',
@@ -155,41 +155,41 @@ export async function obterLocalizacaoAtual(): Promise<LocalizacaoResult | null>
 
     return result;
   } catch (error) {
-    logger.error('gps', 'Erro ao obter localização', { error: String(error) });
+    logger.error('gps', 'Error getting location', { error: String(error) });
     return null;
   }
 }
 
 // ============================================
-// WATCH DE POSIÇÃO (TEMPO REAL)
+// POSITION WATCH (REAL-TIME)
 // ============================================
 
 let locationSubscription: Location.LocationSubscription | null = null;
 
 export interface WatchOptions {
   accuracy?: Location.Accuracy;
-  distanceInterval?: number; // metros
-  timeInterval?: number; // milissegundos
+  distanceInterval?: number; // meters
+  timeInterval?: number; // milliseconds
 }
 
 /**
- * Inicia monitoramento de posição em tempo real
+ * Start real-time position monitoring
  */
-export async function iniciarWatchPosicao(
-  onUpdate: (location: LocalizacaoResult) => void,
+export async function startPositionWatch(
+  onUpdate: (location: LocationResult) => void,
   options: WatchOptions = {}
 ): Promise<boolean> {
   try {
-    const permissoes = await verificarPermissoes();
-    if (!permissoes.foreground) {
-      logger.warn('gps', 'Sem permissão para watch de posição');
+    const permissions = await checkPermissions();
+    if (!permissions.foreground) {
+      logger.warn('gps', 'No permission for position watch');
       return false;
     }
 
-    // Para watch anterior se existir
-    await pararWatchPosicao();
+    // Stop previous watch if exists
+    await stopPositionWatch();
 
-    logger.info('gps', '👁️ Iniciando watch de posição');
+    logger.info('gps', '👁️ Starting position watch');
 
     locationSubscription = await Location.watchPositionAsync(
       {
@@ -198,7 +198,7 @@ export async function iniciarWatchPosicao(
         timeInterval: options.timeInterval ?? 5000,
       },
       (location) => {
-        const result: LocalizacaoResult = {
+        const result: LocationResult = {
           coords: {
             latitude: location.coords.latitude,
             longitude: location.coords.longitude,
@@ -207,7 +207,7 @@ export async function iniciarWatchPosicao(
           timestamp: location.timestamp,
         };
 
-        logger.debug('gps', 'Atualização de posição', {
+        logger.debug('gps', 'Position update', {
           lat: result.coords.latitude.toFixed(6),
           lng: result.coords.longitude.toFixed(6),
         });
@@ -218,17 +218,17 @@ export async function iniciarWatchPosicao(
 
     return true;
   } catch (error) {
-    logger.error('gps', 'Erro ao iniciar watch de posição', { error: String(error) });
+    logger.error('gps', 'Error starting position watch', { error: String(error) });
     return false;
   }
 }
 
 /**
- * Para monitoramento de posição
+ * Stop position monitoring
  */
-export async function pararWatchPosicao(): Promise<void> {
+export async function stopPositionWatch(): Promise<void> {
   if (locationSubscription) {
-    logger.info('gps', '⏹️ Parando watch de posição');
+    logger.info('gps', '⏹️ Stopping position watch');
     locationSubscription.remove();
     locationSubscription = null;
   }
@@ -239,27 +239,27 @@ export async function pararWatchPosicao(): Promise<void> {
 // ============================================
 
 /**
- * Inicia monitoramento de geofences
+ * Start geofence monitoring
  */
-export async function iniciarGeofencing(regions: GeofenceRegion[]): Promise<boolean> {
+export async function startGeofencing(regions: GeofenceRegion[]): Promise<boolean> {
   try {
     if (regions.length === 0) {
-      logger.warn('geofence', 'Nenhuma região para monitorar');
+      logger.warn('geofence', 'No regions to monitor');
       return false;
     }
 
-    const permissoes = await verificarPermissoes();
-    if (!permissoes.background) {
-      const granted = await solicitarPermissaoBackground();
+    const permissions = await checkPermissions();
+    if (!permissions.background) {
+      const granted = await requestBackgroundPermission();
       if (!granted) {
-        logger.warn('geofence', 'Sem permissão background para geofencing');
+        logger.warn('geofence', 'No background permission for geofencing');
         return false;
       }
     }
 
-    logger.info('geofence', `🎯 Iniciando geofencing para ${regions.length} região(ões)`);
+    logger.info('geofence', `🎯 Starting geofencing for ${regions.length} region(s)`);
 
-    // Configura as regiões
+    // Configure regions
     const locationRegions = regions.map(r => ({
       identifier: r.identifier,
       latitude: r.latitude,
@@ -271,33 +271,33 @@ export async function iniciarGeofencing(regions: GeofenceRegion[]): Promise<bool
 
     await Location.startGeofencingAsync(GEOFENCE_TASK_NAME, locationRegions);
 
-    logger.info('geofence', '✅ Geofencing iniciado com sucesso');
+    logger.info('geofence', '✅ Geofencing started successfully');
     return true;
   } catch (error) {
-    logger.error('geofence', 'Erro ao iniciar geofencing', { error: String(error) });
+    logger.error('geofence', 'Error starting geofencing', { error: String(error) });
     return false;
   }
 }
 
 /**
- * Para monitoramento de geofences
+ * Stop geofence monitoring
  */
-export async function pararGeofencing(): Promise<void> {
+export async function stopGeofencing(): Promise<void> {
   try {
     const isRunning = await Location.hasStartedGeofencingAsync(GEOFENCE_TASK_NAME);
     if (isRunning) {
-      logger.info('geofence', '⏹️ Parando geofencing');
+      logger.info('geofence', '⏹️ Stopping geofencing');
       await Location.stopGeofencingAsync(GEOFENCE_TASK_NAME);
     }
   } catch (error) {
-    logger.error('geofence', 'Erro ao parar geofencing', { error: String(error) });
+    logger.error('geofence', 'Error stopping geofencing', { error: String(error) });
   }
 }
 
 /**
- * Verifica se geofencing está ativo
+ * Check if geofencing is active
  */
-export async function isGeofencingAtivo(): Promise<boolean> {
+export async function isGeofencingActive(): Promise<boolean> {
   try {
     return await Location.hasStartedGeofencingAsync(GEOFENCE_TASK_NAME);
   } catch {
@@ -310,59 +310,59 @@ export async function isGeofencingAtivo(): Promise<boolean> {
 // ============================================
 
 /**
- * Inicia atualizações de localização em background
- * Útil como fallback quando geofencing nativo é lento
+ * Start background location updates
+ * Useful as fallback when native geofencing is slow
  */
-export async function iniciarBackgroundLocation(): Promise<boolean> {
+export async function startBackgroundLocation(): Promise<boolean> {
   try {
-    const permissoes = await verificarPermissoes();
-    if (!permissoes.background) {
-      logger.warn('gps', 'Sem permissão background');
+    const permissions = await checkPermissions();
+    if (!permissions.background) {
+      logger.warn('gps', 'No background permission');
       return false;
     }
 
-    logger.info('gps', '🔄 Iniciando background location');
+    logger.info('gps', '🔄 Starting background location');
 
     await Location.startLocationUpdatesAsync(LOCATION_TASK_NAME, {
       accuracy: Location.Accuracy.Balanced,
-      distanceInterval: 50, // Atualiza a cada 50m de movimento
-      timeInterval: 60000, // Ou a cada 1 minuto
-      deferredUpdatesInterval: 300000, // Batch a cada 5 min
+      distanceInterval: 50, // Update every 50m of movement
+      timeInterval: 60000, // Or every 1 minute
+      deferredUpdatesInterval: 300000, // Batch every 5 min
       showsBackgroundLocationIndicator: true,
       foregroundService: {
         notificationTitle: 'OnSite Timekeeper',
-        notificationBody: 'Marcando horas de trabalho',
-        notificationColor: "#868584ff", // Cor OnSite Amber
+        notificationBody: 'Tracking work hours',
+        notificationColor: "#868584ff", // OnSite Amber color
       },
     });
 
-    logger.info('gps', '✅ Background location iniciado');
+    logger.info('gps', '✅ Background location started');
     return true;
   } catch (error) {
-    logger.error('gps', 'Erro ao iniciar background location', { error: String(error) });
+    logger.error('gps', 'Error starting background location', { error: String(error) });
     return false;
   }
 }
 
 /**
- * Para atualizações de localização em background
+ * Stop background location updates
  */
-export async function pararBackgroundLocation(): Promise<void> {
+export async function stopBackgroundLocation(): Promise<void> {
   try {
     const isRunning = await Location.hasStartedLocationUpdatesAsync(LOCATION_TASK_NAME);
     if (isRunning) {
-      logger.info('gps', '⏹️ Parando background location');
+      logger.info('gps', '⏹️ Stopping background location');
       await Location.stopLocationUpdatesAsync(LOCATION_TASK_NAME);
     }
   } catch (error) {
-    logger.error('gps', 'Erro ao parar background location', { error: String(error) });
+    logger.error('gps', 'Error stopping background location', { error: String(error) });
   }
 }
 
 /**
- * Verifica se background location está ativo
+ * Check if background location is active
  */
-export async function isBackgroundLocationAtivo(): Promise<boolean> {
+export async function isBackgroundLocationActive(): Promise<boolean> {
   try {
     return await Location.hasStartedLocationUpdatesAsync(LOCATION_TASK_NAME);
   } catch {
@@ -371,50 +371,50 @@ export async function isBackgroundLocationAtivo(): Promise<boolean> {
 }
 
 // ============================================
-// UTILITÁRIOS
+// UTILITIES
 // ============================================
 
 /**
- * Calcula distância entre dois pontos (Haversine)
+ * Calculate distance between two points (Haversine)
  */
-export function calcularDistancia(
-  ponto1: Coordenadas,
-  ponto2: Coordenadas
+export function calculateDistance(
+  point1: Coordinates,
+  point2: Coordinates
 ): number {
-  const R = 6371e3; // Raio da Terra em metros
-  const φ1 = (ponto1.latitude * Math.PI) / 180;
-  const φ2 = (ponto2.latitude * Math.PI) / 180;
-  const Δφ = ((ponto2.latitude - ponto1.latitude) * Math.PI) / 180;
-  const Δλ = ((ponto2.longitude - ponto1.longitude) * Math.PI) / 180;
+  const R = 6371e3; // Earth radius in meters
+  const φ1 = (point1.latitude * Math.PI) / 180;
+  const φ2 = (point2.latitude * Math.PI) / 180;
+  const Δφ = ((point2.latitude - point1.latitude) * Math.PI) / 180;
+  const Δλ = ((point2.longitude - point1.longitude) * Math.PI) / 180;
 
   const a =
     Math.sin(Δφ / 2) * Math.sin(Δφ / 2) +
     Math.cos(φ1) * Math.cos(φ2) * Math.sin(Δλ / 2) * Math.sin(Δλ / 2);
   const c = 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
 
-  return R * c; // Distância em metros
+  return R * c; // Distance in meters
 }
 
 /**
- * Verifica se um ponto está dentro de um geofence
+ * Check if a point is inside a geofence
  */
-export function estaDentroGeofence(
-  posicao: Coordenadas,
+export function isInsideGeofence(
+  position: Coordinates,
   geofence: GeofenceRegion
 ): boolean {
-  const distancia = calcularDistancia(posicao, {
+  const distance = calculateDistance(position, {
     latitude: geofence.latitude,
     longitude: geofence.longitude,
   });
-  return distancia <= geofence.radius;
+  return distance <= geofence.radius;
 }
 
 /**
- * Formata distância para exibição
+ * Format distance for display
  */
-export function formatarDistancia(metros: number): string {
-  if (metros < 1000) {
-    return `${Math.round(metros)}m`;
+export function formatDistance(meters: number): string {
+  if (meters < 1000) {
+    return `${Math.round(meters)}m`;
   }
-  return `${(metros / 1000).toFixed(1)}km`;
+  return `${(meters / 1000).toFixed(1)}km`;
 }

@@ -1,12 +1,14 @@
 /**
  * Auth Store - OnSite Timekeeper
  * 
- * Gerencia autenticação com Supabase
+ * Manages authentication with Supabase
  * - Login/Logout
- * - Registro de usuário
- * - Sessão persistente
- * - Registra auth events para auditoria
- * - Persiste userId para background tasks
+ * - User registration
+ * - Persistent session
+ * - Registers auth events for audit
+ * - Persists userId for background tasks
+ * 
+ * REFACTORED: All PT names converted to EN
  */
 
 import { create } from 'zustand';
@@ -15,7 +17,7 @@ import * as Device from 'expo-device';
 import * as Application from 'expo-application';
 import { supabase, isSupabaseConfigured } from '../lib/supabase';
 import { logger } from '../lib/logger';
-import { incrementarTelemetria } from '../lib/database';
+import { incrementTelemetry } from '../lib/database';
 import { 
   setBackgroundUserId, 
   clearBackgroundUserId,
@@ -25,7 +27,7 @@ import {
 import type { User, Session } from '@supabase/supabase-js';
 
 // ============================================
-// TIPOS
+// TYPES
 // ============================================
 
 interface AuthState {
@@ -66,10 +68,10 @@ interface AuthEventData {
 }
 
 // ============================================
-// HELPER: Registrar Auth Event
+// HELPER: Register Auth Event
 // ============================================
 
-async function registrarAuthEvent(
+async function registerAuthEvent(
   eventType: AuthEventType,
   userId: string | null,
   eventData?: AuthEventData
@@ -101,52 +103,52 @@ async function registrarAuthEvent(
     });
 
     if (error) {
-      logger.warn('auth', 'Erro ao registrar auth event', { error: error.message });
+      logger.warn('auth', 'Error registering auth event', { error: error.message });
     } else {
-      logger.debug('auth', `📊 Auth event registrado: ${eventType}`);
+      logger.debug('auth', `📊 Auth event registered: ${eventType}`);
     }
   } catch (error) {
-    logger.warn('auth', 'Exceção ao registrar auth event', { error: String(error) });
+    logger.warn('auth', 'Exception registering auth event', { error: String(error) });
   }
 }
 
 // ============================================
-// HELPER: Configurar Background após Login
+// HELPER: Configure Background after Login
 // ============================================
 
-async function configurarBackgroundParaUsuario(userId: string): Promise<void> {
+async function configureBackgroundForUser(userId: string): Promise<void> {
   try {
-    // 1. Persiste userId para background tasks
+    // 1. Persist userId for background tasks
     await setBackgroundUserId(userId);
-    logger.debug('auth', '✅ UserId salvo para background');
+    logger.debug('auth', '✅ UserId saved for background');
 
-    // 2. Inicia heartbeat (safety net)
-    const heartbeatIniciado = await startHeartbeat();
-    if (heartbeatIniciado) {
-      logger.debug('auth', '✅ Heartbeat iniciado');
+    // 2. Start heartbeat (safety net)
+    const heartbeatStarted = await startHeartbeat();
+    if (heartbeatStarted) {
+      logger.debug('auth', '✅ Heartbeat started');
     } else {
-      logger.warn('auth', '⚠️ Heartbeat não pôde ser iniciado');
+      logger.warn('auth', '⚠️ Heartbeat could not be started');
     }
   } catch (error) {
-    logger.error('auth', 'Erro ao configurar background', { error: String(error) });
+    logger.error('auth', 'Error configuring background', { error: String(error) });
   }
 }
 
 // ============================================
-// HELPER: Limpar Background após Logout
+// HELPER: Clear Background after Logout
 // ============================================
 
-async function limparBackgroundDoUsuario(): Promise<void> {
+async function clearBackgroundForUser(): Promise<void> {
   try {
-    // 1. Para heartbeat
+    // 1. Stop heartbeat
     await stopHeartbeat();
-    logger.debug('auth', '✅ Heartbeat parado');
+    logger.debug('auth', '✅ Heartbeat stopped');
 
-    // 2. Remove userId do background
+    // 2. Remove userId from background
     await clearBackgroundUserId();
-    logger.debug('auth', '✅ UserId removido do background');
+    logger.debug('auth', '✅ UserId removed from background');
   } catch (error) {
-    logger.error('auth', 'Erro ao limpar background', { error: String(error) });
+    logger.error('auth', 'Error clearing background', { error: String(error) });
   }
 }
 
@@ -162,10 +164,10 @@ export const useAuthStore = create<AuthState>((set, get) => ({
 
   initialize: async () => {
     try {
-      logger.info('boot', '🔐 Inicializando autenticação...');
+      logger.info('boot', '🔐 Initializing authentication...');
 
       if (!isSupabaseConfigured()) {
-        logger.warn('auth', 'Supabase não configurado - modo offline');
+        logger.warn('auth', 'Supabase not configured - offline mode');
         set({ isLoading: false });
         return;
       }
@@ -173,7 +175,7 @@ export const useAuthStore = create<AuthState>((set, get) => ({
       const { data: { session }, error } = await supabase.auth.getSession();
 
       if (error) {
-        logger.error('auth', 'Erro ao restaurar sessão', { error: error.message });
+        logger.error('auth', 'Error restoring session', { error: error.message });
         set({ isLoading: false });
         return;
       }
@@ -186,29 +188,29 @@ export const useAuthStore = create<AuthState>((set, get) => ({
           isLoading: false,
         });
         
-        logger.info('auth', '✅ Sessão restaurada', { 
+        logger.info('auth', '✅ Session restored', { 
           userId: session.user.id,
           email: session.user.email 
         });
 
         // ========================================
-        // NOVO: Configura background para usuário
+        // Configure background for user
         // ========================================
-        await configurarBackgroundParaUsuario(session.user.id);
+        await configureBackgroundForUser(session.user.id);
 
-        // Registra evento
-        await registrarAuthEvent('session_restored', session.user.id, {
+        // Register event
+        await registerAuthEvent('session_restored', session.user.id, {
           email: session.user.email,
         });
 
-        // Incrementa app_opens
-        await incrementarTelemetria(session.user.id, 'app_opens');
+        // Increment app_opens
+        await incrementTelemetry(session.user.id, 'app_opens');
       } else {
         set({ isLoading: false });
-        logger.info('auth', 'Nenhuma sessão ativa');
+        logger.info('auth', 'No active session');
       }
 
-      // Listener para mudanças de autenticação
+      // Listener for auth changes
       supabase.auth.onAuthStateChange(async (event, session) => {
         logger.debug('auth', `Auth event: ${event}`);
         
@@ -223,28 +225,28 @@ export const useAuthStore = create<AuthState>((set, get) => ({
         });
 
         // ========================================
-        // NOVO: Atualiza background conforme evento
+        // Update background based on event
         // ========================================
         if (event === 'SIGNED_IN' && session?.user) {
-          logger.info('auth', '✅ Login realizado');
-          await configurarBackgroundParaUsuario(session.user.id);
+          logger.info('auth', '✅ Login completed');
+          await configureBackgroundForUser(session.user.id);
         } else if (event === 'SIGNED_OUT') {
-          logger.info('auth', '👋 Logout realizado');
-          await limparBackgroundDoUsuario();
+          logger.info('auth', '👋 Logout completed');
+          await clearBackgroundForUser();
         }
       });
     } catch (error) {
-      logger.error('auth', 'Erro na inicialização', { error: String(error) });
+      logger.error('auth', 'Initialization error', { error: String(error) });
       set({ isLoading: false });
     }
   },
 
   signIn: async (email: string, password: string) => {
     try {
-      logger.info('auth', '🔑 Tentando login...', { email });
+      logger.info('auth', '🔑 Attempting login...', { email });
 
       if (!isSupabaseConfigured()) {
-        return { error: 'Supabase não configurado' };
+        return { error: 'Supabase not configured' };
       }
 
       const { data, error } = await supabase.auth.signInWithPassword({
@@ -253,21 +255,21 @@ export const useAuthStore = create<AuthState>((set, get) => ({
       });
 
       if (error) {
-        logger.warn('auth', '❌ Falha no login', { error: error.message });
+        logger.warn('auth', '❌ Login failed', { error: error.message });
         
-        await registrarAuthEvent('login_failed', null, {
+        await registerAuthEvent('login_failed', null, {
           email,
           error: error.message,
         });
         
-        let mensagem = error.message;
+        let message = error.message;
         if (error.message.includes('Invalid login')) {
-          mensagem = 'Email ou senha incorretos';
+          message = 'Incorrect email or password';
         } else if (error.message.includes('Email not confirmed')) {
-          mensagem = 'Confirme seu email antes de fazer login';
+          message = 'Confirm your email before logging in';
         }
         
-        return { error: mensagem };
+        return { error: message };
       }
 
       set({
@@ -277,35 +279,35 @@ export const useAuthStore = create<AuthState>((set, get) => ({
       });
 
       // ========================================
-      // NOVO: Configura background para usuário
+      // Configure background for user
       // ========================================
       if (data.user?.id) {
-        await configurarBackgroundParaUsuario(data.user.id);
+        await configureBackgroundForUser(data.user.id);
       }
 
-      await registrarAuthEvent('login', data.user?.id || null, {
+      await registerAuthEvent('login', data.user?.id || null, {
         email,
         method: 'password',
       });
 
       if (data.user?.id) {
-        await incrementarTelemetria(data.user.id, 'app_opens');
+        await incrementTelemetry(data.user.id, 'app_opens');
       }
 
-      logger.info('auth', '✅ Login bem-sucedido', { userId: data.user?.id });
+      logger.info('auth', '✅ Login successful', { userId: data.user?.id });
       return { error: null };
     } catch (error) {
-      logger.error('auth', 'Erro no login', { error: String(error) });
-      return { error: 'Erro ao fazer login. Tente novamente.' };
+      logger.error('auth', 'Login error', { error: String(error) });
+      return { error: 'Error logging in. Try again.' };
     }
   },
 
   signUp: async (email: string, password: string, nome: string) => {
     try {
-      logger.info('auth', '📝 Registrando novo usuário...', { email });
+      logger.info('auth', '📝 Registering new user...', { email });
 
       if (!isSupabaseConfigured()) {
-        return { error: 'Supabase não configurado' };
+        return { error: 'Supabase not configured' };
       }
 
       const { data, error } = await supabase.auth.signUp({
@@ -317,27 +319,27 @@ export const useAuthStore = create<AuthState>((set, get) => ({
       });
 
       if (error) {
-        logger.warn('auth', '❌ Falha no registro', { error: error.message });
+        logger.warn('auth', '❌ Registration failed', { error: error.message });
         
-        let mensagem = error.message;
+        let message = error.message;
         if (error.message.includes('already registered')) {
-          mensagem = 'Este email já está cadastrado';
+          message = 'This email is already registered';
         } else if (error.message.includes('Password')) {
-          mensagem = 'Senha deve ter pelo menos 6 caracteres';
+          message = 'Password must be at least 6 characters';
         }
         
-        return { error: mensagem };
+        return { error: message };
       }
 
-      await registrarAuthEvent('signup', data.user?.id || null, {
+      await registerAuthEvent('signup', data.user?.id || null, {
         email,
         nome,
         requires_confirmation: !data.session,
       });
 
-      // Supabase pode requerer confirmação de email
+      // Supabase may require email confirmation
       if (data.user && !data.session) {
-        logger.info('auth', '📧 Email de confirmação enviado');
+        logger.info('auth', '📧 Confirmation email sent');
         return { error: null };
       }
 
@@ -349,38 +351,38 @@ export const useAuthStore = create<AuthState>((set, get) => ({
         });
 
         // ========================================
-        // NOVO: Configura background para usuário
+        // Configure background for user
         // ========================================
         if (data.user?.id) {
-          await configurarBackgroundParaUsuario(data.user.id);
-          await incrementarTelemetria(data.user.id, 'app_opens');
+          await configureBackgroundForUser(data.user.id);
+          await incrementTelemetry(data.user.id, 'app_opens');
         }
       }
 
-      logger.info('auth', '✅ Registro bem-sucedido', { userId: data.user?.id });
+      logger.info('auth', '✅ Registration successful', { userId: data.user?.id });
       return { error: null };
     } catch (error) {
-      logger.error('auth', 'Erro no registro', { error: String(error) });
-      return { error: 'Erro ao criar conta. Tente novamente.' };
+      logger.error('auth', 'Registration error', { error: String(error) });
+      return { error: 'Error creating account. Try again.' };
     }
   },
 
   signOut: async () => {
     try {
-      logger.info('auth', '🚪 Fazendo logout...');
+      logger.info('auth', '🚪 Logging out...');
 
       const userId = get().user?.id || null;
       const userEmail = get().user?.email;
 
-      // Registra logout ANTES de limpar
-      await registrarAuthEvent('logout', userId, {
+      // Register logout BEFORE clearing
+      await registerAuthEvent('logout', userId, {
         email: userEmail,
       });
 
       // ========================================
-      // NOVO: Limpa background ANTES do logout
+      // Clear background BEFORE logout
       // ========================================
-      await limparBackgroundDoUsuario();
+      await clearBackgroundForUser();
 
       if (isSupabaseConfigured()) {
         await supabase.auth.signOut();
@@ -392,10 +394,10 @@ export const useAuthStore = create<AuthState>((set, get) => ({
         isAuthenticated: false,
       });
 
-      logger.info('auth', '✅ Logout realizado');
+      logger.info('auth', '✅ Logout completed');
     } catch (error) {
-      logger.error('auth', 'Erro no logout', { error: String(error) });
-      // Força logout local mesmo se falhar
+      logger.error('auth', 'Logout error', { error: String(error) });
+      // Force local logout even if it fails
       set({
         user: null,
         session: null,

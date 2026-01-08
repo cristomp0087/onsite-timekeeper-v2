@@ -6,6 +6,8 @@
  * - Daily statistics
  * - Session history
  * - Delete and edit records
+ * 
+ * REFACTORED: Renamed from registroStore.ts, all PT names removed
  */
 
 import { create } from 'zustand';
@@ -14,19 +16,19 @@ import { logger } from '../lib/logger';
 import {
   db,
   initDatabase,
-  criarRegistroEntrada,
-  registrarSaida as dbRegistrarSaida,
-  getSessaoAtivaGlobal,
-  getSessoesHoje,
-  getSessoesPorPeriodo,
-  getEstatisticasHoje,
-  formatarDuracao,
-  type SessaoComputada,
-  type EstatisticasDia,
+  createEntryRecord,
+  registerExit as dbRegisterExit,
+  getGlobalActiveSession,
+  getTodaySessions,
+  getSessionsByPeriod,
+  getTodayStats,
+  formatDuration,
+  type ComputedSession,
+  type DayStats,
 } from '../lib/database';
-import { gerarRelatorioSessao, gerarRelatorioCompleto } from '../lib/reports';
+import { generateSessionReport, generateCompleteReport } from '../lib/reports';
 import { useAuthStore } from './authStore';
-import type { Coordenadas } from '../lib/location';
+import type { Coordinates } from '../lib/location';
 
 // ============================================
 // TYPES
@@ -36,23 +38,16 @@ interface RecordState {
   isInitialized: boolean;
   
   // Current session (if one is open)
-  currentSession: SessaoComputada | null;
+  currentSession: ComputedSession | null;
   
   // Today's sessions
-  todaySessions: SessaoComputada[];
+  todaySessions: ComputedSession[];
   
   // Statistics
-  todayStats: EstatisticasDia;
+  todayStats: DayStats;
   
   // Last finished session (to show report)
-  lastFinishedSession: SessaoComputada | null;
-
-  // Legacy accessors (for compatibility)
-  isInicializado: boolean;
-  sessaoAtual: SessaoComputada | null;
-  sessoesHoje: SessaoComputada[];
-  estatisticasHoje: EstatisticasDia;
-  ultimaSessaoFinalizada: SessaoComputada | null;
+  lastFinishedSession: ComputedSession | null;
 
   // Actions
   initialize: () => Promise<void>;
@@ -61,17 +56,17 @@ interface RecordState {
   registerEntry: (
     locationId: string,
     locationName: string,
-    coords?: Coordenadas & { accuracy?: number }
+    coords?: Coordinates & { accuracy?: number }
   ) => Promise<string>;
   
   registerExit: (
     locationId: string,
-    coords?: Coordenadas & { accuracy?: number }
+    coords?: Coordinates & { accuracy?: number }
   ) => Promise<void>;
   
   registerExitWithAdjustment: (
     locationId: string,
-    coords?: Coordenadas & { accuracy?: number },
+    coords?: Coordinates & { accuracy?: number },
     adjustmentMinutes?: number
   ) => Promise<void>;
   
@@ -84,16 +79,16 @@ interface RecordState {
   clearLastSession: () => void;
   
   // Helpers
-  getSessionsByPeriod: (startDate: string, endDate: string) => Promise<SessaoComputada[]>;
+  getSessionsByPeriod: (startDate: string, endDate: string) => Promise<ComputedSession[]>;
   
   // CRUD
   deleteRecord: (id: string) => Promise<void>;
   editRecord: (id: string, updates: {
-    entrada?: string;
-    saida?: string;
-    editado_manualmente?: number;
-    motivo_edicao?: string;
-    pausa_minutos?: number;
+    entry_at?: string;
+    exit_at?: string;
+    manually_edited?: number;
+    edit_reason?: string;
+    pause_minutes?: number;
   }) => Promise<void>;
   
   // Manual entry
@@ -103,42 +98,6 @@ interface RecordState {
     entry: string;
     exit: string;
     pauseMinutes?: number;
-  }) => Promise<string>;
-
-  // Legacy methods (for compatibility)
-  registrarEntrada: (
-    localId: string,
-    localNome: string,
-    coords?: Coordenadas & { accuracy?: number }
-  ) => Promise<string>;
-  registrarSaida: (
-    localId: string,
-    coords?: Coordenadas & { accuracy?: number }
-  ) => Promise<void>;
-  registrarSaidaComAjuste: (
-    localId: string,
-    coords?: Coordenadas & { accuracy?: number },
-    ajusteMinutos?: number
-  ) => Promise<void>;
-  recarregarDados: () => Promise<void>;
-  compartilharUltimaSessao: () => Promise<void>;
-  compartilharRelatorio: (dataInicio: string, dataFim: string) => Promise<void>;
-  limparUltimaSessao: () => void;
-  getSessoesPeriodo: (dataInicio: string, dataFim: string) => Promise<SessaoComputada[]>;
-  deletarRegistro: (id: string) => Promise<void>;
-  editarRegistro: (id: string, updates: {
-    entrada?: string;
-    saida?: string;
-    editado_manualmente?: number;
-    motivo_edicao?: string;
-    pausa_minutos?: number;
-  }) => Promise<void>;
-  criarRegistroManual: (params: {
-    localId: string;
-    localNome: string;
-    entrada: string;
-    saida: string;
-    pausaMinutos?: number;
   }) => Promise<string>;
 }
 
@@ -179,19 +138,12 @@ async function ensureDbInitialized(): Promise<boolean> {
 // STORE
 // ============================================
 
-export const useRegistroStore = create<RecordState>((set, get) => ({
+export const useRecordStore = create<RecordState>((set, get) => ({
   isInitialized: false,
   currentSession: null,
   todaySessions: [],
-  todayStats: { total_minutos: 0, total_sessoes: 0 },
+  todayStats: { total_minutes: 0, total_sessions: 0 },
   lastFinishedSession: null,
-
-  // Legacy property aliases
-  get isInicializado() { return get().isInitialized; },
-  get sessaoAtual() { return get().currentSession; },
-  get sessoesHoje() { return get().todaySessions; },
-  get estatisticasHoje() { return get().todayStats; },
-  get ultimaSessaoFinalizada() { return get().lastFinishedSession; },
 
   initialize: async () => {
     if (get().isInitialized) return;
@@ -228,11 +180,11 @@ export const useRegistroStore = create<RecordState>((set, get) => ({
 
       logger.info('session', `📥 ENTRY: ${locationName}`, { locationId });
 
-      const recordId = await criarRegistroEntrada({
+      const recordId = await createEntryRecord({
         userId,
-        localId: locationId,
-        localNome: locationName,
-        tipo: 'automatico',
+        locationId,
+        locationName,
+        type: 'automatic',
       });
 
       await get().reloadData();
@@ -256,14 +208,14 @@ export const useRegistroStore = create<RecordState>((set, get) => ({
 
       logger.info('session', `📤 EXIT`, { locationId });
 
-      await dbRegistrarSaida(userId, locationId);
+      await dbRegisterExit(userId, locationId);
 
       await get().reloadData();
 
       // Store last finished session for report
       const { todaySessions } = get();
       const finishedSession = todaySessions.find(
-        s => s.local_id === locationId && s.status === 'finalizada'
+        s => s.location_id === locationId && s.status === 'finished'
       );
       if (finishedSession) {
         set({ lastFinishedSession: finishedSession });
@@ -284,16 +236,37 @@ export const useRegistroStore = create<RecordState>((set, get) => ({
       const dbOk = await ensureDbInitialized();
       if (!dbOk) throw new Error('Database not available');
 
-      logger.info('session', `📤 EXIT (adjustment: ${adjustmentMinutes}min)`, { locationId });
+      logger.info('session', `📤 EXIT (adjusted ${adjustmentMinutes} min)`, { locationId });
 
-      await dbRegistrarSaida(userId, locationId, adjustmentMinutes);
+      // Get active session for this location
+      const activeSession = await getGlobalActiveSession(userId);
+      
+      if (!activeSession || activeSession.location_id !== locationId) {
+        throw new Error('No active session at this location');
+      }
+
+      // Calculate adjusted exit time
+      const now = new Date();
+      now.setMinutes(now.getMinutes() + adjustmentMinutes);
+      const adjustedExit = now.toISOString();
+
+      // Update record directly
+      db.runSync(
+        `UPDATE records SET 
+          exit_at = ?, 
+          manually_edited = 1, 
+          edit_reason = ?,
+          synced_at = NULL
+        WHERE id = ? AND user_id = ?`,
+        [adjustedExit, `Exit adjusted by ${adjustmentMinutes} minutes`, activeSession.id, userId]
+      );
 
       await get().reloadData();
 
-      // Store last finished session
+      // Store last finished session for report
       const { todaySessions } = get();
       const finishedSession = todaySessions.find(
-        s => s.local_id === locationId && s.status === 'finalizada'
+        s => s.location_id === locationId && s.status === 'finished'
       );
       if (finishedSession) {
         set({ lastFinishedSession: finishedSession });
@@ -305,32 +278,36 @@ export const useRegistroStore = create<RecordState>((set, get) => ({
   },
 
   reloadData: async () => {
-    const userId = useAuthStore.getState().getUserId();
-    if (!userId) {
-      set({
-        currentSession: null,
-        todaySessions: [],
-        todayStats: { total_minutos: 0, total_sessoes: 0 },
-      });
-      return;
-    }
-
     try {
+      const userId = useAuthStore.getState().getUserId();
+      if (!userId) {
+        set({
+          currentSession: null,
+          todaySessions: [],
+          todayStats: { total_minutes: 0, total_sessions: 0 },
+        });
+        return;
+      }
+
       const dbOk = await ensureDbInitialized();
       if (!dbOk) return;
 
-      const [currentSession, todaySessions, todayStats] = await Promise.all([
-        getSessaoAtivaGlobal(userId),
-        getSessoesHoje(userId),
-        getEstatisticasHoje(userId),
+      const [activeSession, sessions, stats] = await Promise.all([
+        getGlobalActiveSession(userId),
+        getTodaySessions(userId),
+        getTodayStats(userId),
       ]);
 
-      set({ currentSession, todaySessions, todayStats });
+      set({
+        currentSession: activeSession,
+        todaySessions: sessions,
+        todayStats: stats,
+      });
 
       logger.debug('database', 'Data reloaded', {
-        activeSession: currentSession?.local_nome ?? 'none',
-        sessions: todaySessions.length,
-        minutes: todayStats.total_minutos,
+        hasActiveSession: !!activeSession,
+        sessionsCount: sessions.length,
+        totalMinutes: stats.total_minutes,
       });
     } catch (error) {
       logger.error('database', 'Error reloading data', { error: String(error) });
@@ -339,14 +316,11 @@ export const useRegistroStore = create<RecordState>((set, get) => ({
 
   shareLastSession: async () => {
     const { lastFinishedSession } = get();
-    if (!lastFinishedSession) {
-      logger.warn('database', 'No session to share');
-      return;
-    }
+    if (!lastFinishedSession) return;
 
     try {
       const userName = useAuthStore.getState().getUserName();
-      const report = gerarRelatorioSessao(lastFinishedSession, userName ?? undefined);
+      const report = generateSessionReport(lastFinishedSession, userName ?? undefined);
       
       await Share.share({
         message: report,
@@ -364,9 +338,9 @@ export const useRegistroStore = create<RecordState>((set, get) => ({
     if (!userId) return;
 
     try {
-      const sessions = await getSessoesPorPeriodo(userId, startDate, endDate);
+      const sessions = await getSessionsByPeriod(userId, startDate, endDate);
       const userName = useAuthStore.getState().getUserName();
-      const report = gerarRelatorioCompleto(sessions, userName ?? undefined);
+      const report = generateCompleteReport(sessions, userName ?? undefined);
 
       await Share.share({
         message: report,
@@ -388,7 +362,7 @@ export const useRegistroStore = create<RecordState>((set, get) => ({
     if (!userId) return [];
 
     try {
-      return await getSessoesPorPeriodo(userId, startDate, endDate);
+      return await getSessionsByPeriod(userId, startDate, endDate);
     } catch (error) {
       logger.error('database', 'Error fetching sessions by period', { error: String(error) });
       return [];
@@ -409,8 +383,8 @@ export const useRegistroStore = create<RecordState>((set, get) => ({
       if (!dbOk) throw new Error('Database not available');
 
       // Check if record exists and belongs to user
-      const record = db.getFirstSync<{ id: string; saida: string | null }>(
-        `SELECT id, saida FROM registros WHERE id = ? AND user_id = ?`,
+      const record = db.getFirstSync<{ id: string; exit_at: string | null }>(
+        `SELECT id, exit_at FROM records WHERE id = ? AND user_id = ?`,
         [id, userId]
       );
 
@@ -419,19 +393,19 @@ export const useRegistroStore = create<RecordState>((set, get) => ({
       }
 
       // Don't allow deleting active session
-      if (!record.saida) {
+      if (!record.exit_at) {
         throw new Error('Cannot delete an ongoing session');
       }
 
       // Delete from local SQLite
-      db.runSync(`DELETE FROM registros WHERE id = ? AND user_id = ?`, [id, userId]);
+      db.runSync(`DELETE FROM records WHERE id = ? AND user_id = ?`, [id, userId]);
       logger.info('record', `🗑️ Record deleted locally: ${id}`);
 
       // Try to delete from Supabase too
       try {
         const { supabase } = await import('../lib/supabase');
         const { error } = await supabase
-          .from('registros')
+          .from('records')
           .delete()
           .eq('id', id)
           .eq('user_id', userId);
@@ -468,7 +442,7 @@ export const useRegistroStore = create<RecordState>((set, get) => ({
 
       // Check if record exists and belongs to user
       const record = db.getFirstSync<{ id: string }>(
-        `SELECT id FROM registros WHERE id = ? AND user_id = ?`,
+        `SELECT id FROM records WHERE id = ? AND user_id = ?`,
         [id, userId]
       );
 
@@ -480,25 +454,25 @@ export const useRegistroStore = create<RecordState>((set, get) => ({
       const setClauses: string[] = [];
       const values: any[] = [];
 
-      if (updates.entrada) {
-        setClauses.push('entrada = ?');
-        values.push(updates.entrada);
+      if (updates.entry_at) {
+        setClauses.push('entry_at = ?');
+        values.push(updates.entry_at);
       }
-      if (updates.saida) {
-        setClauses.push('saida = ?');
-        values.push(updates.saida);
+      if (updates.exit_at) {
+        setClauses.push('exit_at = ?');
+        values.push(updates.exit_at);
       }
-      if (updates.editado_manualmente !== undefined) {
-        setClauses.push('editado_manualmente = ?');
-        values.push(updates.editado_manualmente);
+      if (updates.manually_edited !== undefined) {
+        setClauses.push('manually_edited = ?');
+        values.push(updates.manually_edited);
       }
-      if (updates.motivo_edicao) {
-        setClauses.push('motivo_edicao = ?');
-        values.push(updates.motivo_edicao);
+      if (updates.edit_reason) {
+        setClauses.push('edit_reason = ?');
+        values.push(updates.edit_reason);
       }
-      if (updates.pausa_minutos !== undefined) {
-        setClauses.push('pausa_minutos = ?');
-        values.push(updates.pausa_minutos);
+      if (updates.pause_minutes !== undefined) {
+        setClauses.push('pause_minutes = ?');
+        values.push(updates.pause_minutes);
       }
 
       // Mark as not synced (will be re-sent to Supabase)
@@ -511,7 +485,7 @@ export const useRegistroStore = create<RecordState>((set, get) => ({
       values.push(id, userId);
 
       db.runSync(
-        `UPDATE registros SET ${setClauses.join(', ')} WHERE id = ? AND user_id = ?`,
+        `UPDATE records SET ${setClauses.join(', ')} WHERE id = ? AND user_id = ?`,
         values
       );
 
@@ -543,9 +517,9 @@ export const useRegistroStore = create<RecordState>((set, get) => ({
 
       // Insert complete record (with entry and exit)
       db.runSync(
-        `INSERT INTO registros (
-          id, user_id, local_id, local_nome, entrada, saida, 
-          tipo, editado_manualmente, motivo_edicao, pausa_minutos, synced_at
+        `INSERT INTO records (
+          id, user_id, location_id, location_name, entry_at, exit_at, 
+          type, manually_edited, edit_reason, pause_minutes, synced_at
         ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL)`,
         [
           id,
@@ -572,48 +546,6 @@ export const useRegistroStore = create<RecordState>((set, get) => ({
       throw error;
     }
   },
-
-  // ============================================
-  // LEGACY METHOD ALIASES (for compatibility)
-  // ============================================
-  registrarEntrada: async (localId, localNome, coords) => 
-    get().registerEntry(localId, localNome, coords),
-  
-  registrarSaida: async (localId, coords) => 
-    get().registerExit(localId, coords),
-  
-  registrarSaidaComAjuste: async (localId, coords, ajusteMinutos) => 
-    get().registerExitWithAdjustment(localId, coords, ajusteMinutos),
-  
-  recarregarDados: async () => 
-    get().reloadData(),
-  
-  compartilharUltimaSessao: async () => 
-    get().shareLastSession(),
-  
-  compartilharRelatorio: async (dataInicio, dataFim) => 
-    get().shareReport(dataInicio, dataFim),
-  
-  limparUltimaSessao: () => 
-    get().clearLastSession(),
-  
-  getSessoesPeriodo: async (dataInicio, dataFim) => 
-    get().getSessionsByPeriod(dataInicio, dataFim),
-  
-  deletarRegistro: async (id) => 
-    get().deleteRecord(id),
-  
-  editarRegistro: async (id, updates) => 
-    get().editRecord(id, updates),
-  
-  criarRegistroManual: async (params) => 
-    get().createManualRecord({
-      locationId: params.localId,
-      locationName: params.localNome,
-      entry: params.entrada,
-      exit: params.saida,
-      pauseMinutes: params.pausaMinutos,
-    }),
 }));
 
 // ============================================
@@ -621,8 +553,5 @@ export const useRegistroStore = create<RecordState>((set, get) => ({
 // ============================================
 
 export function useFormatDuration(minutes: number | null | undefined): string {
-  return formatarDuracao(minutes);
+  return formatDuration(minutes);
 }
-
-// Legacy export
-export const useFormatarDuracao = useFormatDuration;

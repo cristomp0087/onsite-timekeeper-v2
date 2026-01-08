@@ -1,37 +1,37 @@
 /**
  * Database Core - OnSite Timekeeper
  * 
- * Instância SQLite, inicialização, tipos e helpers
+ * SQLite instance, initialization, types and helpers
  */
 
 import * as SQLite from 'expo-sqlite';
 import { logger } from '../logger';
 
 // ============================================
-// INSTÂNCIA DO BANCO (Singleton)
+// DATABASE INSTANCE (Singleton)
 // ============================================
 
 export const db = SQLite.openDatabaseSync('onsite-timekeeper.db');
 
 // ============================================
-// TIPOS
+// TYPES
 // ============================================
 
-export type LocalStatus = 'active' | 'deleted' | 'pending_delete' | 'syncing';
-export type RegistroTipo = 'automatico' | 'manual';
+export type LocationStatus = 'active' | 'deleted' | 'pending_delete' | 'syncing';
+export type RecordType = 'automatic' | 'manual';
 export type SyncLogAction = 'create' | 'update' | 'delete' | 'sync_up' | 'sync_down';
 export type SyncLogStatus = 'pending' | 'synced' | 'conflict' | 'failed';
-export type GeopontoFonte = 'polling' | 'geofence' | 'heartbeat' | 'background' | 'manual';
+export type GeopointSource = 'polling' | 'geofence' | 'heartbeat' | 'background' | 'manual';
 
-export interface LocalDB {
+export interface LocationDB {
   id: string;
   user_id: string;
-  nome: string;
+  name: string;
   latitude: number;
   longitude: number;
-  raio: number;
-  cor: string;
-  status: LocalStatus;
+  radius: number;
+  color: string;
+  status: LocationStatus;
   deleted_at: string | null;
   last_seen_at: string;
   created_at: string;
@@ -39,20 +39,20 @@ export interface LocalDB {
   synced_at: string | null;
 }
 
-export interface RegistroDB {
+export interface RecordDB {
   id: string;
   user_id: string;
-  local_id: string;
-  local_nome: string | null;
-  entrada: string;
-  saida: string | null;
-  tipo: RegistroTipo;
-  editado_manualmente: number; // SQLite não tem boolean
-  motivo_edicao: string | null;
-  hash_integridade: string | null;
-  cor: string | null;
+  location_id: string;
+  location_name: string | null;
+  entry_at: string;
+  exit_at: string | null;
+  type: RecordType;
+  manually_edited: number; // SQLite has no boolean
+  edit_reason: string | null;
+  integrity_hash: string | null;
+  color: string | null;
   device_id: string | null;
-  pausa_minutos: number | null;
+  pause_minutes: number | null;
   created_at: string;
   synced_at: string | null;
 }
@@ -60,7 +60,7 @@ export interface RegistroDB {
 export interface SyncLogDB {
   id: string;
   user_id: string;
-  entity_type: 'local' | 'registro';
+  entity_type: 'location' | 'record';
   entity_id: string;
   action: SyncLogAction;
   old_value: string | null;
@@ -70,15 +70,15 @@ export interface SyncLogDB {
   created_at: string;
 }
 
-// Sessão com campos calculados para UI
-export interface SessaoComputada extends RegistroDB {
-  status: 'ativa' | 'pausada' | 'finalizada';
-  duracao_minutos: number;
+// Session with computed fields for UI
+export interface ComputedSession extends RecordDB {
+  status: 'active' | 'paused' | 'finished';
+  duration_minutes: number;
 }
 
-export interface EstatisticasDia {
-  total_minutos: number;
-  total_sessoes: number;
+export interface DayStats {
+  total_minutes: number;
+  total_sessions: number;
 }
 
 export interface HeartbeatLogDB {
@@ -88,35 +88,35 @@ export interface HeartbeatLogDB {
   latitude: number;
   longitude: number;
   accuracy: number | null;
-  inside_fence: number; // 0 ou 1 (SQLite não tem boolean)
+  inside_fence: number; // 0 or 1 (SQLite has no boolean)
   fence_id: string | null;
   fence_name: string | null;
-  sessao_id: string | null;
+  session_id: string | null;
   battery_level: number | null;
   created_at: string;
 }
 
-export interface GeopontoDB {
+export interface GeopointDB {
   id: string;
-  sessao_id: string | null;
+  session_id: string | null;
   user_id: string;
   latitude: number;
   longitude: number;
   accuracy: number | null;
   timestamp: string;
-  fonte: GeopontoFonte;
-  dentro_fence: number; // 0 ou 1
+  source: GeopointSource;
+  inside_fence: number; // 0 or 1
   fence_id: string | null;
-  fence_nome: string | null;
+  fence_name: string | null;
   created_at: string;
   synced_at: string | null;
 }
 
 export interface TelemetryDailyDB {
-  date: string; // YYYY-MM-DD (PRIMARY KEY junto com user_id)
+  date: string; // YYYY-MM-DD (PRIMARY KEY with user_id)
   user_id: string;
   
-  // Uso do app
+  // App usage
   app_opens: number;
   
   // Entries
@@ -138,7 +138,7 @@ export interface TelemetryDailyDB {
   sync_attempts: number;
   sync_failures: number;
   
-  // Heartbeat (agregado)
+  // Heartbeat (aggregated)
   heartbeat_count: number;
   heartbeat_inside_fence_count: number;
   
@@ -148,30 +148,30 @@ export interface TelemetryDailyDB {
 }
 
 // ============================================
-// INICIALIZAÇÃO
+// INITIALIZATION
 // ============================================
 
 let dbInitialized = false;
 
 export async function initDatabase(): Promise<void> {
   if (dbInitialized) {
-    logger.debug('database', 'Database já inicializado');
+    logger.debug('database', 'Database already initialized');
     return;
   }
 
   try {
-    logger.info('boot', '🗄️ Inicializando SQLite...');
+    logger.info('boot', '🗄️ Initializing SQLite...');
 
-    // Tabela de locais
+    // Locations table
     db.execSync(`
-      CREATE TABLE IF NOT EXISTS locais (
+      CREATE TABLE IF NOT EXISTS locations (
         id TEXT PRIMARY KEY,
         user_id TEXT NOT NULL,
-        nome TEXT NOT NULL,
+        name TEXT NOT NULL,
         latitude REAL NOT NULL,
         longitude REAL NOT NULL,
-        raio INTEGER DEFAULT 100,
-        cor TEXT DEFAULT '#3B82F6',
+        radius INTEGER DEFAULT 100,
+        color TEXT DEFAULT '#3B82F6',
         status TEXT DEFAULT 'active',
         deleted_at TEXT,
         last_seen_at TEXT DEFAULT CURRENT_TIMESTAMP,
@@ -181,36 +181,28 @@ export async function initDatabase(): Promise<void> {
       )
     `);
 
-    // Tabela de registros (sessões)
+    // Records table (sessions)
     db.execSync(`
-      CREATE TABLE IF NOT EXISTS registros (
+      CREATE TABLE IF NOT EXISTS records (
         id TEXT PRIMARY KEY,
         user_id TEXT NOT NULL,
-        local_id TEXT NOT NULL,
-        local_nome TEXT,
-        entrada TEXT NOT NULL,
-        saida TEXT,
-        tipo TEXT DEFAULT 'automatico',
-        editado_manualmente INTEGER DEFAULT 0,
-        motivo_edicao TEXT,
-        hash_integridade TEXT,
-        cor TEXT,
+        location_id TEXT NOT NULL,
+        location_name TEXT,
+        entry_at TEXT NOT NULL,
+        exit_at TEXT,
+        type TEXT DEFAULT 'automatic',
+        manually_edited INTEGER DEFAULT 0,
+        edit_reason TEXT,
+        integrity_hash TEXT,
+        color TEXT,
         device_id TEXT,
-        pausa_minutos INTEGER DEFAULT 0,
+        pause_minutes INTEGER DEFAULT 0,
         created_at TEXT DEFAULT CURRENT_TIMESTAMP,
         synced_at TEXT
       )
     `);
 
-    // Migration: coluna pausa_minutos
-    try {
-      db.execSync(`ALTER TABLE registros ADD COLUMN pausa_minutos INTEGER DEFAULT 0`);
-      logger.info('database', '✅ Migration: coluna pausa_minutos adicionada');
-    } catch {
-      logger.debug('database', 'Coluna pausa_minutos já existe (ok)');
-    }
-
-    // Tabela de auditoria de sync
+    // Sync audit table
     db.execSync(`
       CREATE TABLE IF NOT EXISTS sync_log (
         id TEXT PRIMARY KEY,
@@ -226,7 +218,7 @@ export async function initDatabase(): Promise<void> {
       )
     `);
 
-    // Tabela de heartbeat logs (LEGADO)
+    // Heartbeat logs table (LEGACY)
     db.execSync(`
       CREATE TABLE IF NOT EXISTS heartbeat_log (
         id TEXT PRIMARY KEY,
@@ -238,42 +230,42 @@ export async function initDatabase(): Promise<void> {
         inside_fence INTEGER DEFAULT 0,
         fence_id TEXT,
         fence_name TEXT,
-        sessao_id TEXT,
+        session_id TEXT,
         battery_level INTEGER,
         created_at TEXT DEFAULT CURRENT_TIMESTAMP
       )
     `);
 
-    // Índices para heartbeat
+    // Heartbeat indexes
     db.execSync(`CREATE INDEX IF NOT EXISTS idx_heartbeat_user ON heartbeat_log(user_id)`);
     db.execSync(`CREATE INDEX IF NOT EXISTS idx_heartbeat_timestamp ON heartbeat_log(timestamp)`);
-    db.execSync(`CREATE INDEX IF NOT EXISTS idx_heartbeat_sessao ON heartbeat_log(sessao_id)`);
+    db.execSync(`CREATE INDEX IF NOT EXISTS idx_heartbeat_session ON heartbeat_log(session_id)`);
 
-    // Tabela geopontos
+    // Geopoints table
     db.execSync(`
-      CREATE TABLE IF NOT EXISTS geopontos (
+      CREATE TABLE IF NOT EXISTS geopoints (
         id TEXT PRIMARY KEY,
-        sessao_id TEXT,
+        session_id TEXT,
         user_id TEXT NOT NULL,
         latitude REAL NOT NULL,
         longitude REAL NOT NULL,
         accuracy REAL,
         timestamp TEXT NOT NULL,
-        fonte TEXT DEFAULT 'polling',
-        dentro_fence INTEGER DEFAULT 0,
+        source TEXT DEFAULT 'polling',
+        inside_fence INTEGER DEFAULT 0,
         fence_id TEXT,
-        fence_nome TEXT,
+        fence_name TEXT,
         created_at TEXT DEFAULT CURRENT_TIMESTAMP,
         synced_at TEXT
       )
     `);
 
-    // Índices para geopontos
-    db.execSync(`CREATE INDEX IF NOT EXISTS idx_geopontos_user ON geopontos(user_id)`);
-    db.execSync(`CREATE INDEX IF NOT EXISTS idx_geopontos_sessao ON geopontos(sessao_id)`);
-    db.execSync(`CREATE INDEX IF NOT EXISTS idx_geopontos_timestamp ON geopontos(timestamp)`);
+    // Geopoints indexes
+    db.execSync(`CREATE INDEX IF NOT EXISTS idx_geopoints_user ON geopoints(user_id)`);
+    db.execSync(`CREATE INDEX IF NOT EXISTS idx_geopoints_session ON geopoints(session_id)`);
+    db.execSync(`CREATE INDEX IF NOT EXISTS idx_geopoints_timestamp ON geopoints(timestamp)`);
 
-    // Tabela telemetry_daily
+    // Telemetry daily table
     db.execSync(`
       CREATE TABLE IF NOT EXISTS telemetry_daily (
         date TEXT NOT NULL,
@@ -298,22 +290,22 @@ export async function initDatabase(): Promise<void> {
       )
     `);
 
-    // Índices para telemetry_daily
+    // Telemetry indexes
     db.execSync(`CREATE INDEX IF NOT EXISTS idx_telemetry_user ON telemetry_daily(user_id)`);
     db.execSync(`CREATE INDEX IF NOT EXISTS idx_telemetry_synced ON telemetry_daily(synced_at)`);
 
-    // Índices gerais
-    db.execSync(`CREATE INDEX IF NOT EXISTS idx_locais_user ON locais(user_id)`);
-    db.execSync(`CREATE INDEX IF NOT EXISTS idx_locais_status ON locais(status)`);
-    db.execSync(`CREATE INDEX IF NOT EXISTS idx_registros_user ON registros(user_id)`);
-    db.execSync(`CREATE INDEX IF NOT EXISTS idx_registros_local ON registros(local_id)`);
-    db.execSync(`CREATE INDEX IF NOT EXISTS idx_registros_entrada ON registros(entrada)`);
+    // General indexes
+    db.execSync(`CREATE INDEX IF NOT EXISTS idx_locations_user ON locations(user_id)`);
+    db.execSync(`CREATE INDEX IF NOT EXISTS idx_locations_status ON locations(status)`);
+    db.execSync(`CREATE INDEX IF NOT EXISTS idx_records_user ON records(user_id)`);
+    db.execSync(`CREATE INDEX IF NOT EXISTS idx_records_location ON records(location_id)`);
+    db.execSync(`CREATE INDEX IF NOT EXISTS idx_records_entry ON records(entry_at)`);
     db.execSync(`CREATE INDEX IF NOT EXISTS idx_sync_log_entity ON sync_log(entity_type, entity_id)`);
 
     dbInitialized = true;
-    logger.info('boot', '✅ SQLite inicializado com sucesso');
+    logger.info('boot', '✅ SQLite initialized successfully');
   } catch (error) {
-    logger.error('database', '❌ Erro ao inicializar SQLite', { error: String(error) });
+    logger.error('database', '❌ Error initializing SQLite', { error: String(error) });
     throw error;
   }
 }
@@ -343,15 +335,15 @@ function toRad(deg: number): number {
 }
 
 /**
- * Calcula distância entre dois pontos (Haversine)
+ * Calculate distance between two points (Haversine)
  */
-export function calcularDistancia(
+export function calculateDistance(
   lat1: number,
   lon1: number,
   lat2: number,
   lon2: number
 ): number {
-  const R = 6371000; // Raio da Terra em metros
+  const R = 6371000; // Earth radius in meters
   const dLat = toRad(lat2 - lat1);
   const dLon = toRad(lon2 - lon1);
   const a =
@@ -363,25 +355,25 @@ export function calcularDistancia(
 }
 
 /**
- * Calcula duração em minutos entre duas datas
+ * Calculate duration in minutes between two dates
  */
-export function calcularDuracao(inicio: string, fim: string | null): number {
-  if (!inicio) return 0;
-  const start = new Date(inicio).getTime();
-  const end = fim ? new Date(fim).getTime() : Date.now();
-  if (isNaN(start) || isNaN(end)) return 0;
-  const diff = Math.round((end - start) / 60000);
+export function calculateDuration(start: string, end: string | null): number {
+  if (!start) return 0;
+  const startTime = new Date(start).getTime();
+  const endTime = end ? new Date(end).getTime() : Date.now();
+  if (isNaN(startTime) || isNaN(endTime)) return 0;
+  const diff = Math.round((endTime - startTime) / 60000);
   return diff > 0 ? diff : 0;
 }
 
 /**
- * Formata duração em minutos para string legível
+ * Format duration in minutes to readable string
  */
-export function formatarDuracao(minutos: number | null | undefined): string {
-  if (minutos === null || minutos === undefined || isNaN(minutos)) {
+export function formatDuration(minutes: number | null | undefined): string {
+  if (minutes === null || minutes === undefined || isNaN(minutes)) {
     return '0min';
   }
-  const total = Math.floor(Math.max(0, minutos));
+  const total = Math.floor(Math.max(0, minutes));
   const h = Math.floor(total / 60);
   const m = total % 60;
   if (h === 0) return `${m}min`;
@@ -389,12 +381,12 @@ export function formatarDuracao(minutos: number | null | undefined): string {
 }
 
 // ============================================
-// SYNC LOG (Auditoria)
+// SYNC LOG (Audit)
 // ============================================
 
-export async function registrarSyncLog(
+export async function registerSyncLog(
   userId: string,
-  entityType: 'local' | 'registro',
+  entityType: 'location' | 'record',
   entityId: string,
   action: SyncLogAction,
   oldValue: unknown | null,
@@ -422,7 +414,7 @@ export async function registrarSyncLog(
     );
     logger.debug('database', `📝 Sync log: ${action} ${entityType}`, { entityId });
   } catch (error) {
-    logger.error('database', 'Erro ao registrar sync log', { error: String(error) });
+    logger.error('database', 'Error registering sync log', { error: String(error) });
   }
 }
 
@@ -436,13 +428,13 @@ export async function getSyncLogs(
       [userId, limit]
     );
   } catch (error) {
-    logger.error('database', 'Erro ao buscar sync logs', { error: String(error) });
+    logger.error('database', 'Error fetching sync logs', { error: String(error) });
     return [];
   }
 }
 
 export async function getSyncLogsByEntity(
-  entityType: 'local' | 'registro',
+  entityType: 'location' | 'record',
   entityId: string
 ): Promise<SyncLogDB[]> {
   try {
@@ -451,7 +443,7 @@ export async function getSyncLogsByEntity(
       [entityType, entityId]
     );
   } catch (error) {
-    logger.error('database', 'Erro ao buscar sync logs por entidade', { error: String(error) });
+    logger.error('database', 'Error fetching sync logs by entity', { error: String(error) });
     return [];
   }
 }

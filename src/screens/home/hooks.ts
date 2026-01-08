@@ -1,11 +1,13 @@
 /**
  * Home Screen Hook - OnSite Timekeeper
  * 
- * Custom hook que encapsula toda a lógica da HomeScreen:
+ * Custom hook that encapsulates all HomeScreen logic:
  * - States
  * - Effects
  * - Handlers
  * - Computed values
+ * 
+ * REFACTORED: All PT names removed, updated to use EN stores/methods
  */
 
 import { useState, useEffect, useCallback, useMemo } from 'react';
@@ -16,22 +18,22 @@ import * as Sharing from 'expo-sharing';
 import { useAuthStore } from '../../stores/authStore';
 import { 
   useLocationStore, 
-  selectLocais, 
-  selectGeofenceAtivo, 
-  selectIsGeofencingAtivo 
+  selectLocations, 
+  selectActiveGeofence, 
+  selectIsGeofencingActive 
 } from '../../stores/locationStore';
-import { useRegistroStore } from '../../stores/registroStore';
+import { useRecordStore } from '../../stores/recordStore';
 import { useSyncStore } from '../../stores/syncStore';
-import { formatarDuracao } from '../../lib/database';
-import type { SessaoComputada } from '../../lib/database';
-import { gerarRelatorioCompleto } from '../../lib/reports';
+import { formatDuration } from '../../lib/database';
+import type { ComputedSession } from '../../lib/database';
+import { generateCompleteReport } from '../../lib/reports';
 
 import {
-  DIAS_SEMANA,
-  getInicioSemana,
-  getFimSemana,
-  getInicioMes,
-  getFimMes,
+  WEEKDAYS,
+  getWeekStart,
+  getWeekEnd,
+  getMonthStart,
+  getMonthEnd,
   getMonthCalendarDays,
   formatDateRange,
   formatMonthYear,
@@ -39,7 +41,7 @@ import {
   isSameDay,
   isToday,
   getDayKey,
-  type DiaCalendario,
+  type CalendarDay,
 } from './helpers';
 
 // ============================================
@@ -54,23 +56,23 @@ export function useHomeScreen() {
   const userName = useAuthStore(s => s.getUserName());
   
   // Using selectors for locationStore (proper Zustand pattern)
-  const locais = useLocationStore(selectLocais);
-  const geofenceAtivo = useLocationStore(selectGeofenceAtivo);
-  const isGeofencingAtivo = useLocationStore(selectIsGeofencingAtivo);
+  const locations = useLocationStore(selectLocations);
+  const activeGeofence = useLocationStore(selectActiveGeofence);
+  const isGeofencingActive = useLocationStore(selectIsGeofencingActive);
   
   const { 
-    sessaoAtual, 
-    recarregarDados, 
-    registrarSaida, 
-    registrarEntrada,
-    compartilharUltimaSessao, 
-    ultimaSessaoFinalizada, 
-    limparUltimaSessao,
-    getSessoesPeriodo,
-    criarRegistroManual,
-    editarRegistro,
-    deletarRegistro,
-  } = useRegistroStore();
+    currentSession, 
+    reloadData, 
+    registerExit, 
+    registerEntry,
+    shareLastSession, 
+    lastFinishedSession, 
+    clearLastSession,
+    getSessionsByPeriod,
+    createManualRecord,
+    editRecord,
+    deleteRecord,
+  } = useRecordStore();
   const { syncNow } = useSyncStore();
 
   // ============================================
@@ -78,25 +80,25 @@ export function useHomeScreen() {
   // ============================================
   
   const [refreshing, setRefreshing] = useState(false);
-  const [cronometro, setCronometro] = useState('00:00:00');
+  const [timer, setTimer] = useState('00:00:00');
   const [isPaused, setIsPaused] = useState(false);
 
   // Pause timer
-  const [pausaAcumuladaSegundos, setPausaAcumuladaSegundos] = useState(0);
-  const [pausaCronometro, setPausaCronometro] = useState('00:00:00');
-  const [pausaInicioTimestamp, setPausaInicioTimestamp] = useState<number | null>(null);
-  const [tempoCongelado, setTempoCongelado] = useState<string | null>(null);
+  const [accumulatedPauseSeconds, setAccumulatedPauseSeconds] = useState(0);
+  const [pauseTimer, setPauseTimer] = useState('00:00:00');
+  const [pauseStartTimestamp, setPauseStartTimestamp] = useState<number | null>(null);
+  const [frozenTime, setFrozenTime] = useState<string | null>(null);
 
   // Calendar view mode
   const [viewMode, setViewMode] = useState<'week' | 'month'>('week');
   
   // Week view
-  const [semanaAtual, setSemanaAtual] = useState(new Date());
-  const [sessoesSemana, setSessoesSemana] = useState<SessaoComputada[]>([]);
+  const [currentWeek, setCurrentWeek] = useState(new Date());
+  const [weekSessions, setWeekSessions] = useState<ComputedSession[]>([]);
   
   // Month view
-  const [mesAtual, setMesAtual] = useState(new Date());
-  const [sessoesMes, setSessoesMes] = useState<SessaoComputada[]>([]);
+  const [currentMonth, setCurrentMonth] = useState(new Date());
+  const [monthSessions, setMonthSessions] = useState<ComputedSession[]>([]);
   
   // Expanded day (shows report)
   const [expandedDay, setExpandedDay] = useState<string | null>(null);
@@ -108,13 +110,13 @@ export function useHomeScreen() {
   // Manual entry modal
   const [showManualModal, setShowManualModal] = useState(false);
   const [manualDate, setManualDate] = useState<Date>(new Date());
-  const [manualLocalId, setManualLocalId] = useState<string>('');
-  // Campos separados HH:MM para melhor UX
-  const [manualEntradaH, setManualEntradaH] = useState('');
-  const [manualEntradaM, setManualEntradaM] = useState('');
-  const [manualSaidaH, setManualSaidaH] = useState('');
-  const [manualSaidaM, setManualSaidaM] = useState('');
-  const [manualPausa, setManualPausa] = useState('');
+  const [manualLocationId, setManualLocationId] = useState<string>('');
+  // Separate fields HH:MM for better UX
+  const [manualEntryH, setManualEntryH] = useState('');
+  const [manualEntryM, setManualEntryM] = useState('');
+  const [manualExitH, setManualExitH] = useState('');
+  const [manualExitM, setManualExitM] = useState('');
+  const [manualPause, setManualPause] = useState('');
 
   // Session finished modal
   const [showSessionFinishedModal, setShowSessionFinishedModal] = useState(false);
@@ -123,122 +125,122 @@ export function useHomeScreen() {
   // DERIVED STATE
   // ============================================
 
-  const localAtivo = geofenceAtivo ? locais.find(l => l.id === geofenceAtivo) : null;
-  const podeRecomecar = localAtivo && !sessaoAtual;
-  const sessoes = viewMode === 'week' ? sessoesSemana : sessoesMes;
-  const inicioSemana = getInicioSemana(semanaAtual);
-  const fimSemana = getFimSemana(semanaAtual);
+  const activeLocation = activeGeofence ? locations.find(l => l.id === activeGeofence) : null;
+  const canRestart = activeLocation && !currentSession;
+  const sessions = viewMode === 'week' ? weekSessions : monthSessions;
+  const weekStart = getWeekStart(currentWeek);
+  const weekEnd = getWeekEnd(currentWeek);
 
   // ============================================
-  // TIMER EFFECT - Principal para quando pausado
+  // TIMER EFFECT - Main for when paused
   // ============================================
 
   useEffect(() => {
-    if (!sessaoAtual || sessaoAtual.status !== 'ativa') {
-      setCronometro('00:00:00');
+    if (!currentSession || currentSession.status !== 'active') {
+      setTimer('00:00:00');
       setIsPaused(false);
-      setPausaAcumuladaSegundos(0);
-      setPausaCronometro('00:00:00');
-      setPausaInicioTimestamp(null);
-      setTempoCongelado(null);
+      setAccumulatedPauseSeconds(0);
+      setPauseTimer('00:00:00');
+      setPauseStartTimestamp(null);
+      setFrozenTime(null);
       return;
     }
 
-    // Se pausado, mostra tempo congelado e não atualiza
+    // If paused, show frozen time and don't update
     if (isPaused) {
-      if (tempoCongelado) {
-        setCronometro(tempoCongelado);
+      if (frozenTime) {
+        setTimer(frozenTime);
       }
       return;
     }
 
-    const updateCronometro = () => {
-      const inicio = new Date(sessaoAtual.entrada).getTime();
-      const agora = Date.now();
-      // Subtrai o tempo total de pausas do cálculo
-      const diffMs = agora - inicio - (pausaAcumuladaSegundos * 1000);
+    const updateTimer = () => {
+      const start = new Date(currentSession.entry_at).getTime();
+      const now = Date.now();
+      // Subtract total pause time from calculation
+      const diffMs = now - start - (accumulatedPauseSeconds * 1000);
       const diffSec = Math.max(0, Math.floor(diffMs / 1000));
       
       const hours = Math.floor(diffSec / 3600);
       const mins = Math.floor((diffSec % 3600) / 60);
       const secs = diffSec % 60;
       
-      const novoTempo = `${hours.toString().padStart(2, '0')}:${mins.toString().padStart(2, '0')}:${secs.toString().padStart(2, '0')}`;
-      setCronometro(novoTempo);
+      const newTime = `${hours.toString().padStart(2, '0')}:${mins.toString().padStart(2, '0')}:${secs.toString().padStart(2, '0')}`;
+      setTimer(newTime);
     };
 
-    updateCronometro();
-    const interval = setInterval(updateCronometro, 1000);
+    updateTimer();
+    const interval = setInterval(updateTimer, 1000);
     return () => clearInterval(interval);
-  }, [sessaoAtual, isPaused, tempoCongelado, pausaAcumuladaSegundos]);
+  }, [currentSession, isPaused, frozenTime, accumulatedPauseSeconds]);
 
   // Pause timer effect
   useEffect(() => {
-    if (!sessaoAtual || sessaoAtual.status !== 'ativa') return;
+    if (!currentSession || currentSession.status !== 'active') return;
 
-    const updatePausaCronometro = () => {
-      let totalPausaSegundos = pausaAcumuladaSegundos;
+    const updatePauseTimer = () => {
+      let totalPauseSeconds = accumulatedPauseSeconds;
       
-      if (isPaused && pausaInicioTimestamp) {
-        totalPausaSegundos += Math.floor((Date.now() - pausaInicioTimestamp) / 1000);
+      if (isPaused && pauseStartTimestamp) {
+        totalPauseSeconds += Math.floor((Date.now() - pauseStartTimestamp) / 1000);
       }
       
-      const hours = Math.floor(totalPausaSegundos / 3600);
-      const mins = Math.floor((totalPausaSegundos % 3600) / 60);
-      const secs = totalPausaSegundos % 60;
+      const hours = Math.floor(totalPauseSeconds / 3600);
+      const mins = Math.floor((totalPauseSeconds % 3600) / 60);
+      const secs = totalPauseSeconds % 60;
       
-      setPausaCronometro(
+      setPauseTimer(
         `${hours.toString().padStart(2, '0')}:${mins.toString().padStart(2, '0')}:${secs.toString().padStart(2, '0')}`
       );
     };
 
-    updatePausaCronometro();
-    const interval = setInterval(updatePausaCronometro, 1000);
+    updatePauseTimer();
+    const interval = setInterval(updatePauseTimer, 1000);
     return () => clearInterval(interval);
-  }, [isPaused, pausaInicioTimestamp, pausaAcumuladaSegundos, sessaoAtual]);
+  }, [isPaused, pauseStartTimestamp, accumulatedPauseSeconds, currentSession]);
 
   // Session finished modal effect
   useEffect(() => {
-    if (ultimaSessaoFinalizada) {
+    if (lastFinishedSession) {
       setShowSessionFinishedModal(true);
     } else {
       setShowSessionFinishedModal(false);
     }
-  }, [ultimaSessaoFinalizada]);
+  }, [lastFinishedSession]);
 
   // ============================================
   // LOAD DATA
   // ============================================
 
-  const loadSessoesSemana = useCallback(async () => {
-    const inicio = getInicioSemana(semanaAtual);
-    const fim = getFimSemana(semanaAtual);
-    const result = await getSessoesPeriodo(inicio.toISOString(), fim.toISOString());
-    setSessoesSemana(result);
-  }, [semanaAtual, getSessoesPeriodo]);
+  const loadWeekSessions = useCallback(async () => {
+    const start = getWeekStart(currentWeek);
+    const end = getWeekEnd(currentWeek);
+    const result = await getSessionsByPeriod(start.toISOString(), end.toISOString());
+    setWeekSessions(result);
+  }, [currentWeek, getSessionsByPeriod]);
 
-  const loadSessoesMes = useCallback(async () => {
-    const inicio = getInicioMes(mesAtual);
-    const fim = getFimMes(mesAtual);
-    const result = await getSessoesPeriodo(inicio.toISOString(), fim.toISOString());
-    setSessoesMes(result);
-  }, [mesAtual, getSessoesPeriodo]);
-
-  useEffect(() => {
-    if (viewMode === 'week') {
-      loadSessoesSemana();
-    } else {
-      loadSessoesMes();
-    }
-  }, [viewMode, semanaAtual, mesAtual, loadSessoesSemana, loadSessoesMes]);
+  const loadMonthSessions = useCallback(async () => {
+    const start = getMonthStart(currentMonth);
+    const end = getMonthEnd(currentMonth);
+    const result = await getSessionsByPeriod(start.toISOString(), end.toISOString());
+    setMonthSessions(result);
+  }, [currentMonth, getSessionsByPeriod]);
 
   useEffect(() => {
     if (viewMode === 'week') {
-      loadSessoesSemana();
+      loadWeekSessions();
     } else {
-      loadSessoesMes();
+      loadMonthSessions();
     }
-  }, [sessaoAtual]);
+  }, [viewMode, currentWeek, currentMonth, loadWeekSessions, loadMonthSessions]);
+
+  useEffect(() => {
+    if (viewMode === 'week') {
+      loadWeekSessions();
+    } else {
+      loadMonthSessions();
+    }
+  }, [currentSession]);
 
   // ============================================
   // SESSION MODAL HANDLERS
@@ -246,11 +248,11 @@ export function useHomeScreen() {
 
   const handleDismissSessionModal = () => {
     setShowSessionFinishedModal(false);
-    limparUltimaSessao();
+    clearLastSession();
   };
 
   const handleShareSession = async () => {
-    await compartilharUltimaSessao();
+    await shareLastSession();
     handleDismissSessionModal();
   };
 
@@ -260,11 +262,11 @@ export function useHomeScreen() {
 
   const onRefresh = async () => {
     setRefreshing(true);
-    await recarregarDados();
+    await reloadData();
     if (viewMode === 'week') {
-      await loadSessoesSemana();
+      await loadWeekSessions();
     } else {
-      await loadSessoesMes();
+      await loadMonthSessions();
     }
     await syncNow();
     setRefreshing(false);
@@ -274,35 +276,35 @@ export function useHomeScreen() {
   // TIMER ACTIONS
   // ============================================
 
-  const handlePausar = () => {
-    // Congela o tempo atual antes de pausar
-    setTempoCongelado(cronometro);
+  const handlePause = () => {
+    // Freeze current time before pausing
+    setFrozenTime(timer);
     setIsPaused(true);
-    setPausaInicioTimestamp(Date.now());
+    setPauseStartTimestamp(Date.now());
   };
 
-  const handleContinuar = () => {
-    if (pausaInicioTimestamp) {
-      const pausaDuracao = Math.floor((Date.now() - pausaInicioTimestamp) / 1000);
-      setPausaAcumuladaSegundos(prev => prev + pausaDuracao);
+  const handleResume = () => {
+    if (pauseStartTimestamp) {
+      const pauseDuration = Math.floor((Date.now() - pauseStartTimestamp) / 1000);
+      setAccumulatedPauseSeconds(prev => prev + pauseDuration);
     }
-    setPausaInicioTimestamp(null);
-    setTempoCongelado(null); // Libera para voltar a contar
+    setPauseStartTimestamp(null);
+    setFrozenTime(null); // Release to resume counting
     setIsPaused(false);
   };
 
-  const handleParar = () => {
-    if (!sessaoAtual) return;
+  const handleStop = () => {
+    if (!currentSession) return;
     
-    let pausaTotalSegundos = pausaAcumuladaSegundos;
-    if (isPaused && pausaInicioTimestamp) {
-      pausaTotalSegundos += Math.floor((Date.now() - pausaInicioTimestamp) / 1000);
+    let totalPauseSeconds = accumulatedPauseSeconds;
+    if (isPaused && pauseStartTimestamp) {
+      totalPauseSeconds += Math.floor((Date.now() - pauseStartTimestamp) / 1000);
     }
-    const pausaTotalMinutos = Math.floor(pausaTotalSegundos / 60);
+    const totalPauseMinutes = Math.floor(totalPauseSeconds / 60);
 
     Alert.alert(
       '⏹️ Stop Timer',
-      `End current session?${pausaTotalMinutos > 0 ? `\n\nTotal break: ${pausaTotalMinutos} minutes` : ''}`,
+      `End current session?${totalPauseMinutes > 0 ? `\n\nTotal break: ${totalPauseMinutes} minutes` : ''}`,
       [
         { text: 'Cancel', style: 'cancel' },
         {
@@ -310,20 +312,20 @@ export function useHomeScreen() {
           style: 'destructive',
           onPress: async () => {
             try {
-              await registrarSaida(sessaoAtual.local_id);
+              await registerExit(currentSession.location_id);
               
-              if (pausaTotalMinutos > 0) {
-                await editarRegistro(sessaoAtual.id, {
-                  pausa_minutos: pausaTotalMinutos,
-                  editado_manualmente: 1,
-                  motivo_edicao: 'Break recorded automatically',
+              if (totalPauseMinutes > 0) {
+                await editRecord(currentSession.id, {
+                  pause_minutes: totalPauseMinutes,
+                  manually_edited: 1,
+                  edit_reason: 'Break recorded automatically',
                 });
               }
               
               setIsPaused(false);
-              setPausaAcumuladaSegundos(0);
-              setPausaInicioTimestamp(null);
-              setPausaCronometro('00:00:00');
+              setAccumulatedPauseSeconds(0);
+              setPauseStartTimestamp(null);
+              setPauseTimer('00:00:00');
             } catch (error: any) {
               Alert.alert('Error', error.message || 'Could not stop session');
             }
@@ -333,18 +335,18 @@ export function useHomeScreen() {
     );
   };
 
-  const handleRecomecar = async () => {
-    if (!localAtivo) return;
+  const handleRestart = async () => {
+    if (!activeLocation) return;
     Alert.alert(
       '▶️ Start New Session',
-      `Start timer at "${localAtivo.nome}"?`,
+      `Start timer at "${activeLocation.name}"?`,
       [
         { text: 'Cancel', style: 'cancel' },
         {
           text: 'Start',
           onPress: async () => {
             try {
-              await registrarEntrada(localAtivo.id, localAtivo.nome);
+              await registerEntry(activeLocation.id, activeLocation.name);
             } catch (error: any) {
               Alert.alert('Error', error.message || 'Could not start');
             }
@@ -358,68 +360,68 @@ export function useHomeScreen() {
   // CALENDAR DATA
   // ============================================
 
-  const diasCalendarioSemana: DiaCalendario[] = useMemo(() => {
-    const dias: DiaCalendario[] = [];
+  const weekCalendarDays: CalendarDay[] = useMemo(() => {
+    const days: CalendarDay[] = [];
     for (let i = 0; i < 7; i++) {
-      const data = new Date(inicioSemana);
-      data.setDate(data.getDate() + i);
+      const date = new Date(weekStart);
+      date.setDate(date.getDate() + i);
 
-      const sessoesDodia = sessoesSemana.filter(s => {
-        const sessaoDate = new Date(s.entrada);
-        return isSameDay(sessaoDate, data);
+      const daySessions = weekSessions.filter(s => {
+        const sessionDate = new Date(s.entry_at);
+        return isSameDay(sessionDate, date);
       });
 
-      const totalMinutos = sessoesDodia
-        .filter(s => s.saida)
+      const totalMinutes = daySessions
+        .filter(s => s.exit_at)
         .reduce((acc, s) => {
-          const pausaMin = s.pausa_minutos || 0;
-          return acc + Math.max(0, s.duracao_minutos - pausaMin);
+          const pauseMin = s.pause_minutes || 0;
+          return acc + Math.max(0, s.duration_minutes - pauseMin);
         }, 0);
 
-      dias.push({
-        data,
-        diaSemana: DIAS_SEMANA[data.getDay()],
-        diaNumero: data.getDate(),
-        sessoes: sessoesDodia,
-        totalMinutos,
+      days.push({
+        date,
+        weekday: WEEKDAYS[date.getDay()],
+        dayNumber: date.getDate(),
+        sessions: daySessions,
+        totalMinutes,
       });
     }
-    return dias;
-  }, [inicioSemana, sessoesSemana]);
+    return days;
+  }, [weekStart, weekSessions]);
 
-  const diasCalendarioMes = useMemo(() => {
-    return getMonthCalendarDays(mesAtual);
-  }, [mesAtual]);
+  const monthCalendarDays = useMemo(() => {
+    return getMonthCalendarDays(currentMonth);
+  }, [currentMonth]);
 
-  const getSessoesForDay = useCallback((date: Date): SessaoComputada[] => {
-    return sessoes.filter(s => {
-      const sessaoDate = new Date(s.entrada);
-      return isSameDay(sessaoDate, date);
+  const getSessionsForDay = useCallback((date: Date): ComputedSession[] => {
+    return sessions.filter(s => {
+      const sessionDate = new Date(s.entry_at);
+      return isSameDay(sessionDate, date);
     });
-  }, [sessoes]);
+  }, [sessions]);
 
-  const getTotalMinutosForDay = useCallback((date: Date): number => {
-    const sessoesDodia = getSessoesForDay(date);
-    return sessoesDodia
-      .filter(s => s.saida)
+  const getTotalMinutesForDay = useCallback((date: Date): number => {
+    const daySessions = getSessionsForDay(date);
+    return daySessions
+      .filter(s => s.exit_at)
       .reduce((acc, s) => {
-        const pausaMin = s.pausa_minutos || 0;
-        return acc + Math.max(0, s.duracao_minutos - pausaMin);
+        const pauseMin = s.pause_minutes || 0;
+        return acc + Math.max(0, s.duration_minutes - pauseMin);
       }, 0);
-  }, [getSessoesForDay]);
+  }, [getSessionsForDay]);
 
-  const totalSemanaMinutos = sessoesSemana
-    .filter(s => s.saida)
+  const weekTotalMinutes = weekSessions
+    .filter(s => s.exit_at)
     .reduce((acc, s) => {
-      const pausaMin = s.pausa_minutos || 0;
-      return acc + Math.max(0, s.duracao_minutos - pausaMin);
+      const pauseMin = s.pause_minutes || 0;
+      return acc + Math.max(0, s.duration_minutes - pauseMin);
     }, 0);
 
-  const totalMesMinutos = sessoesMes
-    .filter(s => s.saida)
+  const monthTotalMinutes = monthSessions
+    .filter(s => s.exit_at)
     .reduce((acc, s) => {
-      const pausaMin = s.pausa_minutos || 0;
-      return acc + Math.max(0, s.duracao_minutos - pausaMin);
+      const pauseMin = s.pause_minutes || 0;
+      return acc + Math.max(0, s.duration_minutes - pauseMin);
     }, 0);
 
   // ============================================
@@ -432,45 +434,45 @@ export function useHomeScreen() {
   };
 
   const goToPreviousWeek = () => {
-    const newDate = new Date(semanaAtual);
+    const newDate = new Date(currentWeek);
     newDate.setDate(newDate.getDate() - 7);
-    setSemanaAtual(newDate);
+    setCurrentWeek(newDate);
     setExpandedDay(null);
     cancelSelection();
   };
 
   const goToNextWeek = () => {
-    const newDate = new Date(semanaAtual);
+    const newDate = new Date(currentWeek);
     newDate.setDate(newDate.getDate() + 7);
-    setSemanaAtual(newDate);
+    setCurrentWeek(newDate);
     setExpandedDay(null);
     cancelSelection();
   };
 
   const goToCurrentWeek = () => {
-    setSemanaAtual(new Date());
+    setCurrentWeek(new Date());
     setExpandedDay(null);
     cancelSelection();
   };
 
   const goToPreviousMonth = () => {
-    const newDate = new Date(mesAtual);
+    const newDate = new Date(currentMonth);
     newDate.setMonth(newDate.getMonth() - 1);
-    setMesAtual(newDate);
+    setCurrentMonth(newDate);
     setExpandedDay(null);
     cancelSelection();
   };
 
   const goToNextMonth = () => {
-    const newDate = new Date(mesAtual);
+    const newDate = new Date(currentMonth);
     newDate.setMonth(newDate.getMonth() + 1);
-    setMesAtual(newDate);
+    setCurrentMonth(newDate);
     setExpandedDay(null);
     cancelSelection();
   };
 
   const goToCurrentMonth = () => {
-    setMesAtual(new Date());
+    setCurrentMonth(new Date());
     setExpandedDay(null);
     cancelSelection();
   };
@@ -492,18 +494,18 @@ export function useHomeScreen() {
     setSelectedDays(newSet);
   };
 
-  const handleDayPress = (dayKey: string, hasSessoes: boolean) => {
+  const handleDayPress = (dayKey: string, hasSessions: boolean) => {
     if (selectionMode) {
-      if (hasSessoes) {
+      if (hasSessions) {
         toggleSelectDay(dayKey);
       }
-    } else if (hasSessoes) {
+    } else if (hasSessions) {
       setExpandedDay(expandedDay === dayKey ? null : dayKey);
     }
   };
 
-  const handleDayLongPress = (dayKey: string, hasSessoes: boolean) => {
-    if (!hasSessoes) return;
+  const handleDayLongPress = (dayKey: string, hasSessions: boolean) => {
+    if (!hasSessions) return;
     
     if (!selectionMode) {
       setSelectionMode(true);
@@ -520,73 +522,73 @@ export function useHomeScreen() {
 
   const openManualEntry = (date: Date) => {
     setManualDate(date);
-    setManualLocalId(locais[0]?.id || '');
-    // Valores default: 08:00 e 17:00
-    setManualEntradaH('08');
-    setManualEntradaM('00');
-    setManualSaidaH('17');
-    setManualSaidaM('00');
-    setManualPausa('');
+    setManualLocationId(locations[0]?.id || '');
+    // Default values: 08:00 and 17:00
+    setManualEntryH('08');
+    setManualEntryM('00');
+    setManualExitH('17');
+    setManualExitM('00');
+    setManualPause('');
     setShowManualModal(true);
   };
 
   const handleSaveManual = async () => {
-    if (!manualLocalId) {
+    if (!manualLocationId) {
       Alert.alert('Error', 'Select a location');
       return;
     }
-    if (!manualEntradaH || !manualEntradaM || !manualSaidaH || !manualSaidaM) {
+    if (!manualEntryH || !manualEntryM || !manualExitH || !manualExitM) {
       Alert.alert('Error', 'Fill in entry and exit times');
       return;
     }
 
-    const entradaH = parseInt(manualEntradaH, 10);
-    const entradaM = parseInt(manualEntradaM, 10);
-    const saidaH = parseInt(manualSaidaH, 10);
-    const saidaM = parseInt(manualSaidaM, 10);
+    const entryH = parseInt(manualEntryH, 10);
+    const entryM = parseInt(manualEntryM, 10);
+    const exitH = parseInt(manualExitH, 10);
+    const exitM = parseInt(manualExitM, 10);
 
-    if (isNaN(entradaH) || isNaN(entradaM) || isNaN(saidaH) || isNaN(saidaM)) {
+    if (isNaN(entryH) || isNaN(entryM) || isNaN(exitH) || isNaN(exitM)) {
       Alert.alert('Error', 'Invalid time format');
       return;
     }
     
-    // Validação de range
-    if (entradaH < 0 || entradaH > 23 || entradaM < 0 || entradaM > 59 ||
-        saidaH < 0 || saidaH > 23 || saidaM < 0 || saidaM > 59) {
+    // Range validation
+    if (entryH < 0 || entryH > 23 || entryM < 0 || entryM > 59 ||
+        exitH < 0 || exitH > 23 || exitM < 0 || exitM > 59) {
       Alert.alert('Error', 'Invalid time values');
       return;
     }
 
-    const entradaDate = new Date(manualDate);
-    entradaDate.setHours(entradaH, entradaM, 0, 0);
+    const entryDate = new Date(manualDate);
+    entryDate.setHours(entryH, entryM, 0, 0);
 
-    const saidaDate = new Date(manualDate);
-    saidaDate.setHours(saidaH, saidaM, 0, 0);
+    const exitDate = new Date(manualDate);
+    exitDate.setHours(exitH, exitM, 0, 0);
 
-    if (saidaDate <= entradaDate) {
+    if (exitDate <= entryDate) {
       Alert.alert('Error', 'Exit must be after entry');
       return;
     }
 
-    const pausaMinutos = manualPausa ? parseInt(manualPausa, 10) : 0;
+    const pauseMinutes = manualPause ? parseInt(manualPause, 10) : 0;
 
     try {
-      const local = locais.find(l => l.id === manualLocalId);
-      await criarRegistroManual({
-        localId: manualLocalId,
-        localNome: local?.nome || 'Location',
-        entrada: entradaDate.toISOString(),
-        saida: saidaDate.toISOString(),
-        pausaMinutos: pausaMinutos,
+      const location = locations.find(l => l.id === manualLocationId);
+      await createManualRecord({
+        locationId: manualLocationId,
+        locationName: location?.name || 'Location',
+        entry: entryDate.toISOString(),
+        exit: exitDate.toISOString(),
+        pauseMinutes: pauseMinutes,
       });
       Alert.alert('✅ Success', 'Record added!');
 
       setShowManualModal(false);
-      setManualPausa('');
+      setManualPause('');
       if (viewMode === 'week') {
-        loadSessoesSemana();
+        loadWeekSessions();
       } else {
-        loadSessoesMes();
+        loadMonthSessions();
       }
     } catch (error: any) {
       Alert.alert('Error', error.message || 'Could not save');
@@ -597,13 +599,13 @@ export function useHomeScreen() {
   // DELETE DAY
   // ============================================
 
-  const handleDeleteDay = (_dayKey: string, sessoesDia: SessaoComputada[]) => {
-    const sessoesFinalizadas = sessoesDia.filter(s => s.saida);
-    if (sessoesFinalizadas.length === 0) return;
+  const handleDeleteDay = (_dayKey: string, daySessions: ComputedSession[]) => {
+    const finishedSessions = daySessions.filter(s => s.exit_at);
+    if (finishedSessions.length === 0) return;
 
     Alert.alert(
       '🗑️ Delete Day',
-      `Delete all ${sessoesFinalizadas.length} record(s) from this day?`,
+      `Delete all ${finishedSessions.length} record(s) from this day?`,
       [
         { text: 'Cancel', style: 'cancel' },
         {
@@ -611,14 +613,14 @@ export function useHomeScreen() {
           style: 'destructive',
           onPress: async () => {
             try {
-              for (const sessao of sessoesFinalizadas) {
-                await deletarRegistro(sessao.id);
+              for (const session of finishedSessions) {
+                await deleteRecord(session.id);
               }
               setExpandedDay(null);
               if (viewMode === 'week') {
-                loadSessoesSemana();
+                loadWeekSessions();
               } else {
-                loadSessoesMes();
+                loadMonthSessions();
               }
             } catch (error: any) {
               Alert.alert('Error', error.message || 'Could not delete');
@@ -633,8 +635,8 @@ export function useHomeScreen() {
   // EXPORT
   // ============================================
 
-  const exportarComoTexto = async (sessoesToExport: SessaoComputada[]) => {
-    const txt = gerarRelatorioCompleto(sessoesToExport, userName || undefined);
+  const exportAsText = async (sessionsToExport: ComputedSession[]) => {
+    const txt = generateCompleteReport(sessionsToExport, userName || undefined);
     
     try {
       await Share.share({ message: txt, title: 'Time Report' });
@@ -644,8 +646,8 @@ export function useHomeScreen() {
     }
   };
 
-  const exportarComoArquivo = async (sessoesToExport: SessaoComputada[]) => {
-    const txt = gerarRelatorioCompleto(sessoesToExport, userName || undefined);
+  const exportAsFile = async (sessionsToExport: ComputedSession[]) => {
+    const txt = generateCompleteReport(sessionsToExport, userName || undefined);
     
     try {
       const now = new Date();
@@ -671,21 +673,21 @@ export function useHomeScreen() {
   };
 
   const handleExport = async () => {
-    let sessoesToExport: SessaoComputada[];
+    let sessionsToExport: ComputedSession[];
     
     if (selectionMode && selectedDays.size > 0) {
-      sessoesToExport = sessoes.filter(s => {
-        const sessaoDate = new Date(s.entrada);
-        const dayKey = getDayKey(sessaoDate);
+      sessionsToExport = sessions.filter(s => {
+        const sessionDate = new Date(s.entry_at);
+        const dayKey = getDayKey(sessionDate);
         return selectedDays.has(dayKey);
       });
     } else {
-      sessoesToExport = sessoes;
+      sessionsToExport = sessions;
     }
 
-    const sessoesFinalizadas = sessoesToExport.filter(s => s.saida);
+    const finishedSessions = sessionsToExport.filter(s => s.exit_at);
 
-    if (sessoesFinalizadas.length === 0) {
+    if (finishedSessions.length === 0) {
       Alert.alert('Warning', 'No completed sessions to export');
       return;
     }
@@ -695,8 +697,8 @@ export function useHomeScreen() {
       'How would you like to export?',
       [
         { text: 'Cancel', style: 'cancel' },
-        { text: '💬 Text (WhatsApp)', onPress: () => exportarComoTexto(sessoesFinalizadas) },
-        { text: '📄 File', onPress: () => exportarComoArquivo(sessoesFinalizadas) },
+        { text: '💬 Text (WhatsApp)', onPress: () => exportAsText(finishedSessions) },
+        { text: '📄 File', onPress: () => exportAsFile(finishedSessions) },
       ]
     );
   };
@@ -708,29 +710,29 @@ export function useHomeScreen() {
   return {
     // Data
     userName,
-    locais,
-    sessaoAtual,
-    ultimaSessaoFinalizada,
-    localAtivo,
-    podeRecomecar,
-    isGeofencingAtivo,
+    locations,
+    currentSession,
+    lastFinishedSession,
+    activeLocation,
+    canRestart,
+    isGeofencingActive,
     
     // Timer
-    cronometro,
+    timer,
     isPaused,
-    pausaCronometro,
+    pauseTimer,
     
     // Calendar
     viewMode,
     setViewMode,
-    mesAtual,
-    inicioSemana,
-    fimSemana,
-    sessoes,
-    diasCalendarioSemana,
-    diasCalendarioMes,
-    totalSemanaMinutos,
-    totalMesMinutos,
+    currentMonth,
+    weekStart,
+    weekEnd,
+    sessions,
+    weekCalendarDays,
+    monthCalendarDays,
+    weekTotalMinutes,
+    monthTotalMinutes,
     expandedDay,
     
     // Selection
@@ -743,29 +745,29 @@ export function useHomeScreen() {
     setShowManualModal,
     showSessionFinishedModal,
     manualDate,
-    manualLocalId,
-    setManualLocalId,
-    // Campos separados HH:MM
-    manualEntradaH,
-    setManualEntradaH,
-    manualEntradaM,
-    setManualEntradaM,
-    manualSaidaH,
-    setManualSaidaH,
-    manualSaidaM,
-    setManualSaidaM,
-    manualPausa,
-    setManualPausa,
+    manualLocationId,
+    setManualLocationId,
+    // Separate HH:MM fields
+    manualEntryH,
+    setManualEntryH,
+    manualEntryM,
+    setManualEntryM,
+    manualExitH,
+    setManualExitH,
+    manualExitM,
+    setManualExitM,
+    manualPause,
+    setManualPause,
     
     // Refresh
     refreshing,
     onRefresh,
     
     // Timer handlers
-    handlePausar,
-    handleContinuar,
-    handleParar,
-    handleRecomecar,
+    handlePause,
+    handleResume,
+    handleStop,
+    handleRestart,
     
     // Navigation handlers
     goToPreviousWeek,
@@ -778,8 +780,8 @@ export function useHomeScreen() {
     // Day handlers
     handleDayPress,
     handleDayLongPress,
-    getSessoesForDay,
-    getTotalMinutosForDay,
+    getSessionsForDay,
+    getTotalMinutesForDay,
     
     // Modal handlers
     openManualEntry,
@@ -793,7 +795,7 @@ export function useHomeScreen() {
     formatDateRange,
     formatMonthYear,
     formatTimeAMPM,
-    formatarDuracao,
+    formatDuration,
     isToday,
     getDayKey,
     isSameDay,

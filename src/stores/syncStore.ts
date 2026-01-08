@@ -1,9 +1,12 @@
 /**
  * Sync Store - OnSite Timekeeper
  * 
- * MODIFIED: 
- * - Adds batch telemetry sync
- * - Tracks sync success/failure in telemetry
+ * Handles synchronization between local SQLite and Supabase:
+ * - Business data sync (locations, records)
+ * - Telemetry sync (aggregated usage data)
+ * - Cleanup of old data
+ * 
+ * REFACTORED: All PT names removed, English only
  */
 
 import { create } from 'zustand';
@@ -11,20 +14,20 @@ import NetInfo from '@react-native-community/netinfo';
 import { logger } from '../lib/logger';
 import { supabase, isSupabaseConfigured } from '../lib/supabase';
 import {
-  getLocaisParaSync,
-  getRegistrosParaSync,
-  marcarLocalSincronizado,
-  marcarRegistroSincronizado,
-  upsertLocalFromSync,
-  upsertRegistroFromSync,
+  getLocationsForSync,
+  getRecordsForSync,
+  markLocationSynced,
+  markRecordSynced,
+  upsertLocationFromSync,
+  upsertRecordFromSync,
   // Telemetry
-  getTelemetriaParaSync,
-  marcarTelemetriaSincronizada,
-  limparTelemetriaAntiga,
-  incrementarTelemetria,
-  getTelemetriaStats,
-  limparHeartbeatsAntigos,
-  limparGeopontosAntigos,
+  getTelemetryForSync,
+  markTelemetrySynced,
+  cleanOldTelemetry,
+  incrementTelemetry,
+  getTelemetryStats,
+  cleanOldHeartbeats,
+  cleanOldGeopoints,
 } from '../lib/database';
 import { useAuthStore } from './authStore';
 import { useLocationStore } from './locationStore';
@@ -34,7 +37,7 @@ import { useLocationStore } from './locationStore';
 // ============================================
 
 const SYNC_INTERVAL = 5 * 60 * 1000; // 5 minutes - business data
-const TELEMETRY_SYNC_INTERVAL = 60 * 60 * 1000; // 1 hour - telemetry (only uploads previous days)
+const TELEMETRY_SYNC_INTERVAL = 60 * 60 * 1000; // 1 hour - telemetry
 const CLEANUP_INTERVAL = 24 * 60 * 60 * 1000; // 24 hours - cleanup
 
 // ============================================
@@ -48,12 +51,6 @@ interface SyncStats {
   downloadedRecords: number;
   uploadedTelemetry: number;
   errors: string[];
-  
-  // Legacy aliases
-  uploadedLocais: number;
-  uploadedRegistros: number;
-  downloadedLocais: number;
-  downloadedRegistros: number;
 }
 
 interface SyncState {
@@ -74,11 +71,6 @@ interface SyncState {
   syncRecords: () => Promise<void>;
   reconcileOnBoot: () => Promise<void>;
   runCleanup: () => Promise<void>;
-
-  // Legacy method aliases
-  syncLocais: () => Promise<void>;
-  syncRegistros: () => Promise<void>;
-  reconciliarNoBoot: () => Promise<void>;
 }
 
 // ============================================
@@ -208,46 +200,37 @@ export const useSyncStore = create<SyncState>((set, get) => ({
       downloadedRecords: 0,
       uploadedTelemetry: 0,
       errors: [],
-      // Legacy aliases
-      uploadedLocais: 0,
-      uploadedRegistros: 0,
-      downloadedLocais: 0,
-      downloadedRegistros: 0,
     };
 
     try {
       logger.info('sync', '🔄 Starting business sync...');
 
       // Increment sync attempt in telemetry
-      await incrementarTelemetria(userId, 'sync_attempts');
+      await incrementTelemetry(userId, 'sync_attempts');
 
       // 1. Upload locations
       const locationsUp = await uploadLocations(userId);
       stats.uploadedLocations = locationsUp.count;
-      stats.uploadedLocais = locationsUp.count;
       stats.errors.push(...locationsUp.errors);
 
       // 2. Upload records
       const recordsUp = await uploadRecords(userId);
       stats.uploadedRecords = recordsUp.count;
-      stats.uploadedRegistros = recordsUp.count;
       stats.errors.push(...recordsUp.errors);
 
       // 3. Download locations
       const locationsDown = await downloadLocations(userId);
       stats.downloadedLocations = locationsDown.count;
-      stats.downloadedLocais = locationsDown.count;
       stats.errors.push(...locationsDown.errors);
 
       // 4. Download records
       const recordsDown = await downloadRecords(userId);
       stats.downloadedRecords = recordsDown.count;
-      stats.downloadedRegistros = recordsDown.count;
       stats.errors.push(...recordsDown.errors);
 
       // If there were errors, increment failures in telemetry
       if (stats.errors.length > 0) {
-        await incrementarTelemetria(userId, 'sync_failures');
+        await incrementTelemetry(userId, 'sync_failures');
       }
 
       set({ 
@@ -267,23 +250,15 @@ export const useSyncStore = create<SyncState>((set, get) => ({
 
     } catch (error) {
       logger.error('sync', '❌ Sync error', { error: String(error) });
-      
-      // Increment failure in telemetry
-      await incrementarTelemetria(userId, 'sync_failures');
-      
-      set({ 
-        lastSyncStats: {
-          ...stats,
-          errors: [String(error)],
-        }
-      });
+      stats.errors.push(String(error));
+      set({ lastSyncStats: stats });
     } finally {
       set({ isSyncing: false });
     }
   },
 
   // ============================================
-  // TELEMETRY SYNC (batch)
+  // TELEMETRY SYNC (aggregated data)
   // ============================================
   syncTelemetry: async () => {
     if (!isSupabaseConfigured()) return;
@@ -294,66 +269,50 @@ export const useSyncStore = create<SyncState>((set, get) => ({
     try {
       logger.info('sync', '📊 Starting telemetry sync...');
 
-      // Get pending days
-      const pendingDays = await getTelemetriaParaSync(userId);
+      // Get telemetry data that is not from today and not yet synced
+      const telemetryData = await getTelemetryForSync(userId);
       
-      if (pendingDays.length === 0) {
-        logger.debug('sync', 'No pending telemetry');
+      if (telemetryData.length === 0) {
+        logger.debug('sync', 'No telemetry to sync');
         set({ lastTelemetrySyncAt: new Date() });
         return;
       }
 
-      logger.info('sync', `📊 ${pendingDays.length} telemetry days to sync`);
+      let uploaded = 0;
 
-      let syncedCount = 0;
-
-      for (const day of pendingDays) {
+      for (const item of telemetryData) {
         try {
-          // Calculate averages
-          const geofence_accuracy_avg = day.geofence_accuracy_count > 0
-            ? day.geofence_accuracy_sum / day.geofence_accuracy_count
-            : null;
-          
-          const battery_level_avg = day.battery_level_count > 0
-            ? day.battery_level_sum / day.battery_level_count
-            : null;
-
           // Upsert to Supabase
-          const { error } = await supabase.from('timekeeper_telemetry_daily').upsert({
-            user_id: userId,
-            date: day.date,
-            app_opens: day.app_opens,
-            manual_entries_count: day.manual_entries_count,
-            geofence_entries_count: day.geofence_entries_count,
-            geofence_triggers: day.geofence_triggers,
-            geofence_accuracy_avg,
-            background_location_checks: day.background_location_checks,
-            battery_level_avg,
-            offline_entries_count: day.offline_entries_count,
-            sync_attempts: day.sync_attempts,
-            sync_failures: day.sync_failures,
-          }, {
-            onConflict: 'user_id,date',
+          // Map local TelemetryDailyDB fields to Supabase table fields
+          const { error } = await supabase.from('telemetry').upsert({
+            user_id: item.user_id,
+            date: item.date,
+            app_opens: item.app_opens,
+            geofence_entries: item.geofence_entries_count,
+            geofence_exits: item.geofence_triggers, // Use triggers as proxy for exits
+            manual_entries: item.manual_entries_count,
+            heartbeat_checks: item.heartbeat_count,
+            sync_attempts: item.sync_attempts,
+            sync_failures: item.sync_failures,
+            gps_samples: item.background_location_checks, // Use location checks as proxy
+            background_wakeups: item.background_location_checks,
+            updated_at: new Date().toISOString(),
           });
 
           if (error) {
-            logger.error('sync', `❌ Error syncing telemetry ${day.date}`, { error: error.message });
-            continue;
+            logger.warn('sync', 'Telemetry upload failed', { error: error.message, date: item.date });
+          } else {
+            // markTelemetrySynced expects (date, userId)
+            await markTelemetrySynced(item.date, item.user_id);
+            uploaded++;
           }
-
-          // Mark as synced locally
-          await marcarTelemetriaSincronizada(day.date, userId);
-          syncedCount++;
-          
-          logger.debug('sync', `✅ Telemetry ${day.date} synced`);
         } catch (e) {
-          logger.error('sync', `❌ Exception syncing telemetry ${day.date}`, { error: String(e) });
+          logger.warn('sync', 'Telemetry item error', { error: String(e) });
         }
       }
 
       set({ lastTelemetrySyncAt: new Date() });
-
-      logger.info('sync', `✅ Telemetry synced: ${syncedCount}/${pendingDays.length} days`);
+      logger.info('sync', `✅ Telemetry sync: ${uploaded}/${telemetryData.length} uploaded`);
 
     } catch (error) {
       logger.error('sync', '❌ Telemetry sync error', { error: String(error) });
@@ -368,13 +327,13 @@ export const useSyncStore = create<SyncState>((set, get) => ({
       logger.info('sync', '🧹 Running cleanup...');
 
       // Clean old local telemetry (already synced, > 7 days)
-      const telemetryCleaned = await limparTelemetriaAntiga(7);
+      const telemetryCleaned = await cleanOldTelemetry(7);
 
       // Clean old heartbeats (> 30 days)
-      const heartbeatsCleaned = await limparHeartbeatsAntigos(30);
+      const heartbeatsCleaned = await cleanOldHeartbeats(30);
 
       // Clean old geopoints (> 90 days)
-      const geopointsCleaned = await limparGeopontosAntigos(90);
+      const geopointsCleaned = await cleanOldGeopoints(90);
 
       logger.info('sync', '✅ Cleanup completed', {
         telemetry: telemetryCleaned,
@@ -398,7 +357,7 @@ export const useSyncStore = create<SyncState>((set, get) => ({
     const userId = useAuthStore.getState().getUserId();
     
     // Include telemetry stats
-    const telemetryStats = userId ? await getTelemetriaStats(userId) : null;
+    const telemetryStats = userId ? await getTelemetryStats(userId) : null;
     
     return {
       success: true,
@@ -452,13 +411,6 @@ export const useSyncStore = create<SyncState>((set, get) => ({
     await downloadRecords(userId);
     await useLocationStore.getState().reloadLocations();
   },
-
-  // ============================================
-  // LEGACY METHOD ALIASES
-  // ============================================
-  syncLocais: async () => get().syncLocations(),
-  syncRegistros: async () => get().syncRecords(),
-  reconciliarNoBoot: async () => get().reconcileOnBoot(),
 }));
 
 // ============================================
@@ -470,19 +422,19 @@ async function uploadLocations(userId: string): Promise<{ count: number; errors:
   const errors: string[] = [];
 
   try {
-    const locations = await getLocaisParaSync(userId);
+    const locations = await getLocationsForSync(userId);
     logger.info('sync', `📤 ${locations.length} locations pending`);
 
     for (const location of locations) {
       try {
-        const { error } = await supabase.from('locais').upsert({
+        const { error } = await supabase.from('locations').upsert({
           id: location.id,
           user_id: location.user_id,
-          nome: location.nome,
+          name: location.name,
           latitude: location.latitude,
           longitude: location.longitude,
-          raio: location.raio,
-          cor: location.cor,
+          radius: location.radius,
+          color: location.color,
           status: location.status,
           deleted_at: location.deleted_at,
           last_seen_at: location.last_seen_at,
@@ -491,15 +443,15 @@ async function uploadLocations(userId: string): Promise<{ count: number; errors:
         });
 
         if (error) {
-          errors.push(`${location.nome}: ${error.message}`);
-          logger.error('sync', `❌ Location upload failed: ${location.nome}`, { error: error.message });
+          errors.push(`${location.name}: ${error.message}`);
+          logger.error('sync', `❌ Location upload failed: ${location.name}`, { error: error.message });
         } else {
-          await marcarLocalSincronizado(location.id);
+          await markLocationSynced(location.id);
           count++;
-          logger.info('sync', `✅ Location uploaded: ${location.nome}`);
+          logger.info('sync', `✅ Location uploaded: ${location.name}`);
         }
       } catch (e) {
-        errors.push(`${location.nome}: ${e}`);
+        errors.push(`${location.name}: ${e}`);
       }
     }
   } catch (error) {
@@ -514,25 +466,25 @@ async function uploadRecords(userId: string): Promise<{ count: number; errors: s
   const errors: string[] = [];
 
   try {
-    const records = await getRegistrosParaSync(userId);
+    const records = await getRecordsForSync(userId);
     logger.info('sync', `📤 ${records.length} records pending`);
 
     for (const record of records) {
       try {
-        const { error } = await supabase.from('registros').upsert({
+        const { error } = await supabase.from('records').upsert({
           id: record.id,
           user_id: record.user_id,
-          local_id: record.local_id,
-          local_nome: record.local_nome,
-          entrada: record.entrada,
-          saida: record.saida,
-          tipo: record.tipo,
-          editado_manualmente: record.editado_manualmente === 1,
-          motivo_edicao: record.motivo_edicao,
-          hash_integridade: record.hash_integridade,
-          cor: record.cor,
+          location_id: record.location_id,
+          location_name: record.location_name,
+          entry_at: record.entry_at,
+          exit_at: record.exit_at,
+          type: record.type,
+          manually_edited: record.manually_edited === 1,
+          edit_reason: record.edit_reason,
+          integrity_hash: record.integrity_hash,
+          color: record.color,
           device_id: record.device_id,
-          pausa_minutos: record.pausa_minutos || 0,
+          pause_minutes: record.pause_minutes || 0,
           created_at: record.created_at,
         });
 
@@ -540,7 +492,7 @@ async function uploadRecords(userId: string): Promise<{ count: number; errors: s
           errors.push(`Record: ${error.message}`);
           logger.error('sync', `❌ Record upload failed`, { error: error.message });
         } else {
-          await marcarRegistroSincronizado(record.id);
+          await markRecordSynced(record.id);
           count++;
           logger.info('sync', `✅ Record uploaded: ${record.id}`);
         }
@@ -561,7 +513,7 @@ async function downloadLocations(userId: string): Promise<{ count: number; error
 
   try {
     const { data, error } = await supabase
-      .from('locais')
+      .from('locations')
       .select('*')
       .eq('user_id', userId);
 
@@ -574,13 +526,13 @@ async function downloadLocations(userId: string): Promise<{ count: number; error
 
     for (const remote of data || []) {
       try {
-        await upsertLocalFromSync({
+        await upsertLocationFromSync({
           ...remote,
           synced_at: new Date().toISOString(),
         });
         count++;
       } catch (e) {
-        errors.push(`${remote.nome}: ${e}`);
+        errors.push(`${remote.name}: ${e}`);
       }
     }
   } catch (error) {
@@ -596,7 +548,7 @@ async function downloadRecords(userId: string): Promise<{ count: number; errors:
 
   try {
     const { data, error } = await supabase
-      .from('registros')
+      .from('records')
       .select('*')
       .eq('user_id', userId);
 
@@ -609,9 +561,9 @@ async function downloadRecords(userId: string): Promise<{ count: number; errors:
 
     for (const remote of data || []) {
       try {
-        await upsertRegistroFromSync({
+        await upsertRecordFromSync({
           ...remote,
-          editado_manualmente: remote.editado_manualmente ? 1 : 0,
+          manually_edited: remote.manually_edited ? 1 : 0,
           synced_at: new Date().toISOString(),
         });
         count++;

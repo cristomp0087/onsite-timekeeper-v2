@@ -8,34 +8,33 @@
  * - Heartbeat (periodic verification)
  * - Backup polling
  * 
- * MODIFIED: Uses aggregated telemetry instead of individual heartbeat_log
+ * REFACTORED: All PT names removed, English only
  */
 
 import { create } from 'zustand';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import { logger } from '../lib/logger';
 import {
-  obterLocalizacaoAtual,
-  iniciarWatchPosicao,
-  pararWatchPosicao,
-  iniciarGeofencing,
-  pararGeofencing,
-  iniciarBackgroundLocation,
-  pararBackgroundLocation,
-  verificarPermissoes,
-  calcularDistancia,
-  type Coordenadas,
+  getCurrentLocation,
+  startPositionWatch,
+  stopPositionWatch,
+  startGeofencing,
+  stopGeofencing,
+  startBackgroundLocation,
+  stopBackgroundLocation,
+  checkPermissions,
+  calculateDistance,
+  type Coordinates,
   type GeofenceRegion,
-  type PermissoesStatus,
+  type PermissionsStatus,
 } from '../lib/location';
 import {
-  criarLocal,
-  getLocais,
-  removerLocal,
-  atualizarLocal,
+  createLocation,
+  getLocations,
+  removeLocation as dbRemoveLocation,
+  updateLocation as dbUpdateLocation,
   initDatabase,
-  // LEGACY: still using for now to maintain history
-  registrarHeartbeat,
+  registerHeartbeat,
 } from '../lib/database';
 import {
   setGeofenceCallback,
@@ -72,23 +71,12 @@ export interface WorkLocation {
   status: string;
 }
 
-// Legacy interface for compatibility
-export interface LocalDeTrabalho {
-  id: string;
-  nome: string;
-  latitude: number;
-  longitude: number;
-  raio: number;
-  cor: string;
-  status: string;
-}
-
 interface LocationState {
   // Permissions
-  permissions: PermissoesStatus;
+  permissions: PermissionsStatus;
   
   // Current location
-  currentLocation: Coordenadas | null;
+  currentLocation: Coordinates | null;
   accuracy: number | null;
   lastUpdate: number | null;
   
@@ -136,21 +124,6 @@ interface LocationState {
   // Polling
   startPolling: () => void;
   stopPolling: () => void;
-
-  // Legacy methods (for compatibility)
-  atualizarLocalizacao: () => Promise<void>;
-  iniciarTracking: () => Promise<void>;
-  pararTracking: () => Promise<void>;
-  adicionarLocal: (local: Omit<LocalDeTrabalho, 'id' | 'status'>) => Promise<string>;
-  removerLocal: (id: string) => Promise<void>;
-  editarLocal: (id: string, updates: Partial<LocalDeTrabalho>) => Promise<void>;
-  recarregarLocais: () => Promise<void>;
-  iniciarMonitoramento: () => Promise<void>;
-  pararMonitoramento: () => Promise<void>;
-  verificarGeofenceAtual: () => void;
-  atualizarFencesHeartbeat: () => void;
-  iniciarPolling: () => void;
-  pararPolling: () => void;
 }
 
 // ============================================
@@ -194,10 +167,10 @@ export const useLocationStore = create<LocationState>((set, get) => ({
       await import('../lib/backgroundTasks');
 
       // Check permissions - and request if not granted
-      let permissions = await verificarPermissoes();
+      let permissions = await checkPermissions();
       if (!permissions.foreground || !permissions.background) {
-        const { solicitarTodasPermissoes } = await import('../lib/location');
-        permissions = await solicitarTodasPermissoes();
+        const { requestAllPermissions } = await import('../lib/location');
+        permissions = await requestAllPermissions();
       }
       set({ permissions });
       
@@ -224,7 +197,6 @@ export const useLocationStore = create<LocationState>((set, get) => ({
 
       // ============================================
       // HEARTBEAT CALLBACK (SAFETY NET)
-      // MODIFIED: Uses aggregated telemetry
       // ============================================
       setHeartbeatCallback(async (result: HeartbeatResult) => {
         logger.info('heartbeat', '💓 Processing heartbeat', {
@@ -236,20 +208,15 @@ export const useLocationStore = create<LocationState>((set, get) => ({
 
         const userId = useAuthStore.getState().getUserId();
         
-        // Dynamically import registroStore to avoid circular dependency
-        const { useRegistroStore } = await import('./registroStore');
-        const registroStore = useRegistroStore.getState();
-        const currentSession = registroStore.sessaoAtual;
+        // Dynamically import recordStore to avoid circular dependency
+        const { useRecordStore } = await import('./recordStore');
+        const recordStore = useRecordStore.getState();
+        const currentSession = recordStore.currentSession;
 
-        // ============================================
-        // MODIFIED: Register in aggregated telemetry
-        // (registrarHeartbeat also calls incrementarTelemetriaHeartbeat internally)
-        // ============================================
+        // Register heartbeat
         if (userId && result.location) {
           try {
-            // Still calling registrarHeartbeat for now to maintain compatibility
-            // But the function already increments telemetry automatically
-            await registrarHeartbeat(
+            await registerHeartbeat(
               userId,
               result.location.latitude,
               result.location.longitude,
@@ -267,19 +234,18 @@ export const useLocationStore = create<LocationState>((set, get) => ({
 
         // ============================================
         // BUSINESS LOGIC: Detect inconsistencies
-        // (This is what really matters from heartbeat)
         // ============================================
 
         // Case A: Has active session but is OUTSIDE the fence → missed exit!
-        if (currentSession && currentSession.status === 'ativa' && !result.isInsideFence) {
+        if (currentSession && currentSession.status === 'active' && !result.isInsideFence) {
           logger.warn('heartbeat', '⚠️ EXIT DETECTED BY HEARTBEAT!', {
             sessionId: currentSession.id,
-            locationName: currentSession.local_nome,
+            locationName: currentSession.location_name,
           });
 
           // End session automatically
           try {
-            await registroStore.registrarSaida(currentSession.local_id);
+            await recordStore.registerExit(currentSession.location_id);
             logger.info('heartbeat', '✅ Session ended by heartbeat');
             
             // Update activeGeofenceId
@@ -290,7 +256,6 @@ export const useLocationStore = create<LocationState>((set, get) => ({
         }
 
         // Case B: No active session but INSIDE a fence → missed entry?
-        // For safety, we DON'T register automatically - just log
         if (!currentSession && result.isInsideFence && result.fenceId) {
           logger.warn('heartbeat', '⚠️ POSSIBLE MISSED ENTRY', {
             fenceId: result.fenceId,
@@ -299,9 +264,6 @@ export const useLocationStore = create<LocationState>((set, get) => ({
           
           // Update activeGeofenceId so UI shows correctly
           set({ activeGeofenceId: result.fenceId });
-          
-          // TODO: Implement push notification to user
-          // "You're at [location]. Do you want to start a session?"
         }
       });
 
@@ -309,7 +271,7 @@ export const useLocationStore = create<LocationState>((set, get) => ({
       await get().reloadLocations();
 
       // Get current location
-      const location = await obterLocalizacaoAtual();
+      const location = await getCurrentLocation();
       if (location) {
         set({
           currentLocation: location.coords,
@@ -335,7 +297,7 @@ export const useLocationStore = create<LocationState>((set, get) => ({
 
   updateLocation: async () => {
     try {
-      const location = await obterLocalizacaoAtual();
+      const location = await getCurrentLocation();
       if (location) {
         set({
           currentLocation: location.coords,
@@ -350,7 +312,7 @@ export const useLocationStore = create<LocationState>((set, get) => ({
   },
 
   startTracking: async () => {
-    const success = await iniciarWatchPosicao((location) => {
+    const success = await startPositionWatch((location) => {
       set({
         currentLocation: location.coords,
         accuracy: location.accuracy,
@@ -366,7 +328,7 @@ export const useLocationStore = create<LocationState>((set, get) => ({
   },
 
   stopTracking: async () => {
-    await pararWatchPosicao();
+    await stopPositionWatch();
     set({ isWatching: false });
     logger.info('gps', '⏹️ Real-time tracking stopped');
   },
@@ -392,7 +354,7 @@ export const useLocationStore = create<LocationState>((set, get) => ({
     // ============================================
     // VALIDATION 2: Min/max radius
     // ============================================
-    const MIN_RADIUS = 200;
+    const MIN_RADIUS = 100;
     const MAX_RADIUS = 1500;
     
     if (location.radius < MIN_RADIUS) {
@@ -408,7 +370,7 @@ export const useLocationStore = create<LocationState>((set, get) => ({
     const activeLocations = locations.filter(l => l.status === 'active');
     
     for (const existing of activeLocations) {
-      const distance = calcularDistancia(
+      const distance = calculateDistance(
         { latitude: location.latitude, longitude: location.longitude },
         { latitude: existing.latitude, longitude: existing.longitude }
       );
@@ -428,13 +390,13 @@ export const useLocationStore = create<LocationState>((set, get) => ({
     // ============================================
     logger.info('geofence', `➕ Adding location: ${location.name}`);
 
-    const id = await criarLocal({
+    const id = await createLocation({
       userId,
-      nome: location.name,
+      name: location.name,
       latitude: location.latitude,
       longitude: location.longitude,
-      raio: location.radius,
-      cor: location.color,
+      radius: location.radius,
+      color: location.color,
     });
 
     // Reload locations
@@ -464,16 +426,16 @@ export const useLocationStore = create<LocationState>((set, get) => ({
     }
 
     // CHECK IF THERE'S AN ACTIVE SESSION AT THIS LOCATION
-    const { useRegistroStore } = await import('./registroStore');
-    const currentSession = useRegistroStore.getState().sessaoAtual;
+    const { useRecordStore } = await import('./recordStore');
+    const currentSession = useRecordStore.getState().currentSession;
     
-    if (currentSession && currentSession.local_id === id) {
+    if (currentSession && currentSession.location_id === id) {
       throw new Error('Cannot delete a location with an active session. End the timer first.');
     }
 
     logger.info('geofence', `🗑️ Removing location`, { id });
 
-    await removerLocal(userId, id);
+    await dbRemoveLocation(userId, id);
     
     // Remove from state
     set(state => ({
@@ -504,15 +466,7 @@ export const useLocationStore = create<LocationState>((set, get) => ({
       throw new Error('User not authenticated');
     }
 
-    // Convert to legacy format for database
-    const legacyUpdates: any = {};
-    if (updates.name) legacyUpdates.nome = updates.name;
-    if (updates.radius) legacyUpdates.raio = updates.radius;
-    if (updates.color) legacyUpdates.cor = updates.color;
-    if (updates.latitude) legacyUpdates.latitude = updates.latitude;
-    if (updates.longitude) legacyUpdates.longitude = updates.longitude;
-
-    await atualizarLocal(id, legacyUpdates);
+    await dbUpdateLocation(id, updates);
     await get().reloadLocations();
 
     // Restart geofencing if active
@@ -536,14 +490,14 @@ export const useLocationStore = create<LocationState>((set, get) => ({
         return;
       }
 
-      const locationsDB = await getLocais(userId);
+      const locationsDB = await getLocations(userId);
       const locations: WorkLocation[] = locationsDB.map(l => ({
         id: l.id,
-        name: l.nome,
+        name: l.name,
         latitude: l.latitude,
         longitude: l.longitude,
-        radius: l.raio,
-        color: l.cor,
+        radius: l.radius,
+        color: l.color,
         status: l.status,
       }));
 
@@ -578,12 +532,12 @@ export const useLocationStore = create<LocationState>((set, get) => ({
     }));
 
     // Start native geofencing
-    const success = await iniciarGeofencing(regions);
+    const success = await startGeofencing(regions);
     if (success) {
       set({ isGeofencingActive: true });
 
       // Start background location as backup
-      await iniciarBackgroundLocation();
+      await startBackgroundLocation();
       set({ isBackgroundActive: true });
 
       // Start active polling
@@ -616,12 +570,10 @@ export const useLocationStore = create<LocationState>((set, get) => ({
 
   stopMonitoring: async () => {
     get().stopPolling();
-    await pararGeofencing();
-    await pararBackgroundLocation();
+    await stopGeofencing();
+    await stopBackgroundLocation();
     
-    // ============================================
-    // STOP HEARTBEAT
-    // ============================================
+    // Stop heartbeat
     await stopHeartbeat();
 
     set({
@@ -650,7 +602,7 @@ export const useLocationStore = create<LocationState>((set, get) => ({
     // CHECK ENTRY (normal radius)
     // ============================================
     for (const location of activeLocations) {
-      const distance = calcularDistancia(currentLocation, {
+      const distance = calculateDistance(currentLocation, {
         latitude: location.latitude,
         longitude: location.longitude,
       });
@@ -687,7 +639,7 @@ export const useLocationStore = create<LocationState>((set, get) => ({
       const previousLocation = locations.find(l => l.id === activeGeofenceId);
       
       if (previousLocation) {
-        const distance = calcularDistancia(currentLocation, {
+        const distance = calculateDistance(currentLocation, {
           latitude: previousLocation.latitude,
           longitude: previousLocation.longitude,
         });
@@ -729,7 +681,7 @@ export const useLocationStore = create<LocationState>((set, get) => ({
     
     const fences: ActiveFence[] = activeLocations.map(l => ({
       id: l.id,
-      nome: l.name,
+      name: l.name,
       latitude: l.latitude,
       longitude: l.longitude,
       radius: l.radius,
@@ -764,39 +716,6 @@ export const useLocationStore = create<LocationState>((set, get) => ({
     }
     set({ isPollingActive: false });
   },
-
-  // ============================================
-  // LEGACY METHOD ALIASES (for compatibility)
-  // ============================================
-  atualizarLocalizacao: async () => get().updateLocation(),
-  iniciarTracking: async () => get().startTracking(),
-  pararTracking: async () => get().stopTracking(),
-  
-  adicionarLocal: async (local) => get().addLocation({
-    name: local.nome,
-    latitude: local.latitude,
-    longitude: local.longitude,
-    radius: local.raio,
-    color: local.cor,
-  }),
-  
-  removerLocal: async (id) => get().removeLocation(id),
-  
-  editarLocal: async (id, updates) => get().editLocation(id, {
-    name: updates.nome,
-    radius: updates.raio,
-    color: updates.cor,
-    latitude: updates.latitude,
-    longitude: updates.longitude,
-  }),
-  
-  recarregarLocais: async () => get().reloadLocations(),
-  iniciarMonitoramento: async () => get().startMonitoring(),
-  pararMonitoramento: async () => get().stopMonitoring(),
-  verificarGeofenceAtual: () => get().checkCurrentGeofence(),
-  atualizarFencesHeartbeat: () => get().updateHeartbeatFences(),
-  iniciarPolling: () => get().startPolling(),
-  pararPolling: () => get().stopPolling(),
 }));
 
 // ============================================
@@ -834,7 +753,7 @@ function processGeofenceEvent(
     // EXIT: Check hysteresis before confirming
     // ============================================
     if (currentLocation) {
-      const distance = calcularDistancia(currentLocation, {
+      const distance = calculateDistance(currentLocation, {
         latitude: location.latitude,
         longitude: location.longitude,
       });
@@ -891,36 +810,26 @@ async function autoStartMonitoring(
 // ============================================
 
 /**
- * Selector: locations in PT format (LocalDeTrabalho[])
- * Usage: const locais = useLocationStore(selectLocais);
+ * Selector: all locations
  */
-export const selectLocais = (state: LocationState): LocalDeTrabalho[] =>
-  state.locations.map(l => ({
-    id: l.id,
-    nome: l.name,
-    latitude: l.latitude,
-    longitude: l.longitude,
-    raio: l.radius,
-    cor: l.color,
-    status: l.status,
-  }));
+export const selectLocations = (state: LocationState): WorkLocation[] => state.locations;
 
 /**
- * Selector: active geofence ID (legacy name)
+ * Selector: active geofence ID
  */
-export const selectGeofenceAtivo = (state: LocationState) => state.activeGeofenceId;
+export const selectActiveGeofence = (state: LocationState) => state.activeGeofenceId;
 
 /**
- * Selector: is geofencing active (legacy name)
+ * Selector: is geofencing active
  */
-export const selectIsGeofencingAtivo = (state: LocationState) => state.isGeofencingActive;
+export const selectIsGeofencingActive = (state: LocationState) => state.isGeofencingActive;
 
 /**
- * Selector: current location (legacy name)
+ * Selector: current location
  */
-export const selectLocalizacaoAtual = (state: LocationState) => state.currentLocation;
+export const selectCurrentLocation = (state: LocationState) => state.currentLocation;
 
 /**
- * Selector: permissions (legacy name)
+ * Selector: permissions
  */
-export const selectPermissoes = (state: LocationState) => state.permissions;
+export const selectPermissions = (state: LocationState) => state.permissions;

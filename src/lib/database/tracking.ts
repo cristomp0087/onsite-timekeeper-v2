@@ -1,7 +1,7 @@
 /**
  * Database - Tracking
  * 
- * Geopontos, Telemetria agregada, Heartbeat (legado) e Debug
+ * Geopoints, Aggregated Telemetry, Heartbeat (legacy) and Debug
  */
 
 import { logger } from '../logger';
@@ -10,18 +10,18 @@ import {
   generateUUID,
   now,
   getToday,
-  type GeopontoFonte,
-  type GeopontoDB,
+  type GeopointSource,
+  type GeopointDB,
   type HeartbeatLogDB,
   type TelemetryDailyDB,
 } from './core';
 
 // ============================================
-// TELEMETRIA DIÁRIA AGREGADA
+// DAILY AGGREGATED TELEMETRY
 // ============================================
 
 /**
- * Garante que existe uma row para hoje
+ * Ensures a row exists for today
  */
 function ensureTodayTelemetry(userId: string): void {
   const today = getToday();
@@ -32,16 +32,16 @@ function ensureTodayTelemetry(userId: string): void {
       [today, userId, now()]
     );
   } catch {
-    logger.debug('telemetry', 'Row de hoje já existe ou erro ao criar');
+    logger.debug('telemetry', 'Today row already exists or error creating');
   }
 }
 
 /**
- * Incrementa um campo de telemetria do dia
+ * Increments a telemetry field for today
  */
-export async function incrementarTelemetria(
+export async function incrementTelemetry(
   userId: string,
-  campo: 'app_opens' | 'manual_entries_count' | 'geofence_entries_count' | 
+  field: 'app_opens' | 'manual_entries_count' | 'geofence_entries_count' | 
          'geofence_triggers' | 'background_location_checks' | 
          'offline_entries_count' | 'sync_attempts' | 'sync_failures'
 ): Promise<void> {
@@ -50,20 +50,20 @@ export async function incrementarTelemetria(
     const today = getToday();
     
     db.runSync(
-      `UPDATE telemetry_daily SET ${campo} = ${campo} + 1, synced_at = NULL WHERE date = ? AND user_id = ?`,
+      `UPDATE telemetry_daily SET ${field} = ${field} + 1, synced_at = NULL WHERE date = ? AND user_id = ?`,
       [today, userId]
     );
     
-    logger.debug('telemetry', `Incrementado: ${campo}`);
+    logger.debug('telemetry', `Incremented: ${field}`);
   } catch (error) {
-    logger.error('telemetry', `Erro ao incrementar ${campo}`, { error: String(error) });
+    logger.error('telemetry', `Error incrementing ${field}`, { error: String(error) });
   }
 }
 
 /**
- * Incrementa telemetria específica de geofence (com accuracy)
+ * Increments geofence-specific telemetry (with accuracy)
  */
-export async function incrementarTelemetriaGeofence(
+export async function incrementGeofenceTelemetry(
   userId: string,
   accuracy: number | null
 ): Promise<void> {
@@ -88,14 +88,14 @@ export async function incrementarTelemetriaGeofence(
       );
     }
   } catch (error) {
-    logger.error('telemetry', 'Erro ao incrementar geofence telemetry', { error: String(error) });
+    logger.error('telemetry', 'Error incrementing geofence telemetry', { error: String(error) });
   }
 }
 
 /**
- * Incrementa telemetria de heartbeat (agregado)
+ * Increments heartbeat telemetry (aggregated)
  */
-export async function incrementarTelemetriaHeartbeat(
+export async function incrementHeartbeatTelemetry(
   userId: string,
   insideFence: boolean,
   batteryLevel: number | null
@@ -126,61 +126,61 @@ export async function incrementarTelemetriaHeartbeat(
       );
     }
   } catch (error) {
-    logger.error('telemetry', 'Erro ao incrementar heartbeat telemetry', { error: String(error) });
+    logger.error('telemetry', 'Error incrementing heartbeat telemetry', { error: String(error) });
   }
 }
 
 /**
- * Busca telemetria de hoje
+ * Fetches today's telemetry
  */
-export async function getTelemetriaHoje(userId: string): Promise<TelemetryDailyDB | null> {
+export async function getTodayTelemetry(userId: string): Promise<TelemetryDailyDB | null> {
   try {
     return db.getFirstSync<TelemetryDailyDB>(
       `SELECT * FROM telemetry_daily WHERE date = ? AND user_id = ?`,
       [getToday(), userId]
     );
   } catch (error) {
-    logger.error('telemetry', 'Erro ao buscar telemetria de hoje', { error: String(error) });
+    logger.error('telemetry', 'Error fetching today telemetry', { error: String(error) });
     return null;
   }
 }
 
 /**
- * Busca telemetria para sync (não sincronizada)
+ * Fetches telemetry for sync (not synced)
  */
-export async function getTelemetriaParaSync(userId: string): Promise<TelemetryDailyDB[]> {
+export async function getTelemetryForSync(userId: string): Promise<TelemetryDailyDB[]> {
   try {
     return db.getAllSync<TelemetryDailyDB>(
       `SELECT * FROM telemetry_daily WHERE user_id = ? AND synced_at IS NULL ORDER BY date ASC`,
       [userId]
     );
   } catch (error) {
-    logger.error('telemetry', 'Erro ao buscar telemetria para sync', { error: String(error) });
+    logger.error('telemetry', 'Error fetching telemetry for sync', { error: String(error) });
     return [];
   }
 }
 
 /**
- * Marca telemetria como sincronizada
+ * Marks telemetry as synced
  */
-export async function marcarTelemetriaSincronizada(date: string, userId: string): Promise<void> {
+export async function markTelemetrySynced(date: string, userId: string): Promise<void> {
   try {
     db.runSync(
       `UPDATE telemetry_daily SET synced_at = ? WHERE date = ? AND user_id = ?`,
       [now(), date, userId]
     );
   } catch (error) {
-    logger.error('telemetry', 'Erro ao marcar telemetria sincronizada', { error: String(error) });
+    logger.error('telemetry', 'Error marking telemetry synced', { error: String(error) });
   }
 }
 
 /**
- * Limpa telemetria antiga (mais de X dias, só se já sincronizada)
+ * Cleans old telemetry (older than X days, only if already synced)
  */
-export async function limparTelemetriaAntiga(diasManter: number = 7): Promise<number> {
+export async function cleanOldTelemetry(daysToKeep: number = 7): Promise<number> {
   try {
     const cutoff = new Date();
-    cutoff.setDate(cutoff.getDate() - diasManter);
+    cutoff.setDate(cutoff.getDate() - daysToKeep);
     const cutoffStr = cutoff.toISOString().split('T')[0];
     
     const result = db.runSync(
@@ -188,276 +188,223 @@ export async function limparTelemetriaAntiga(diasManter: number = 7): Promise<nu
       [cutoffStr]
     );
     
-    const deletados = result.changes || 0;
-    if (deletados > 0) {
-      logger.info('telemetry', `Telemetria antiga limpa: ${deletados} dias`);
+    const deleted = result.changes || 0;
+    if (deleted > 0) {
+      logger.info('telemetry', `Old telemetry cleaned: ${deleted} days`);
     }
-    return deletados;
+    return deleted;
   } catch (error) {
-    logger.error('telemetry', 'Erro ao limpar telemetria antiga', { error: String(error) });
+    logger.error('telemetry', 'Error cleaning old telemetry', { error: String(error) });
     return 0;
   }
 }
 
 /**
- * Stats de telemetria para debug
+ * Telemetry stats for debug
  */
-export async function getTelemetriaStats(userId: string): Promise<{
-  diasPendentes: number;
-  diasSincronizados: number;
-  hoje: TelemetryDailyDB | null;
+export async function getTelemetryStats(userId: string): Promise<{
+  pendingDays: number;
+  syncedDays: number;
+  today: TelemetryDailyDB | null;
 }> {
   try {
-    const pendentes = db.getFirstSync<{ count: number }>(
+    const pending = db.getFirstSync<{ count: number }>(
       `SELECT COUNT(*) as count FROM telemetry_daily WHERE user_id = ? AND synced_at IS NULL`,
       [userId]
     );
     
-    const sincronizados = db.getFirstSync<{ count: number }>(
+    const synced = db.getFirstSync<{ count: number }>(
       `SELECT COUNT(*) as count FROM telemetry_daily WHERE user_id = ? AND synced_at IS NOT NULL`,
       [userId]
     );
     
-    const hoje = await getTelemetriaHoje(userId);
+    const today = await getTodayTelemetry(userId);
     
     return {
-      diasPendentes: pendentes?.count || 0,
-      diasSincronizados: sincronizados?.count || 0,
-      hoje,
+      pendingDays: pending?.count || 0,
+      syncedDays: synced?.count || 0,
+      today,
     };
   } catch (error) {
-    logger.error('telemetry', 'Erro ao obter stats de telemetria', { error: String(error) });
-    return { diasPendentes: 0, diasSincronizados: 0, hoje: null };
+    logger.error('telemetry', 'Error getting telemetry stats', { error: String(error) });
+    return { pendingDays: 0, syncedDays: 0, today: null };
   }
 }
 
 // ============================================
-// GEOPONTOS (Auditoria GPS)
+// GEOPOINTS (GPS Audit)
 // ============================================
 
 /**
- * Registra um geoponto (leitura GPS)
+ * Registers a geopoint (GPS reading)
  */
-export async function registrarGeoponto(
+export async function registerGeopoint(
   userId: string,
   latitude: number,
   longitude: number,
   accuracy: number | null,
-  fonte: GeopontoFonte,
-  dentroFence: boolean,
+  source: GeopointSource,
+  insideFence: boolean,
   fenceId: string | null,
-  fenceNome: string | null,
-  sessaoId: string | null
+  fenceName: string | null,
+  sessionId: string | null
 ): Promise<string> {
   const id = generateUUID();
   const timestamp = now();
   
   try {
     db.runSync(
-      `INSERT INTO geopontos (id, sessao_id, user_id, latitude, longitude, accuracy, 
-       timestamp, fonte, dentro_fence, fence_id, fence_nome, created_at)
+      `INSERT INTO geopoints (id, session_id, user_id, latitude, longitude, accuracy, 
+       timestamp, source, inside_fence, fence_id, fence_name, created_at)
        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-      [id, sessaoId, userId, latitude, longitude, accuracy, 
-       timestamp, fonte, dentroFence ? 1 : 0, fenceId, fenceNome, timestamp]
+      [id, sessionId, userId, latitude, longitude, accuracy, 
+       timestamp, source, insideFence ? 1 : 0, fenceId, fenceName, timestamp]
     );
     
-    // Incrementa telemetria de geofence se for trigger
-    if (fonte === 'geofence') {
-      await incrementarTelemetriaGeofence(userId, accuracy);
-    } else if (fonte === 'background') {
-      await incrementarTelemetria(userId, 'background_location_checks');
-    }
-    
-    logger.debug('database', 'Geoponto registrado', { 
-      id, 
-      fonte, 
-      dentroFence, 
-      accuracy: accuracy?.toFixed(0) 
-    });
+    logger.debug('database', 'Geopoint registered', { id, source, insideFence });
     return id;
   } catch (error) {
-    logger.error('database', 'Erro ao registrar geoponto', { error: String(error) });
+    logger.error('database', 'Error registering geopoint', { error: String(error) });
     throw error;
   }
 }
 
 /**
- * Busca geopontos de uma sessão específica
+ * Fetches session geopoints
  */
-export async function getGeopontosSessao(sessaoId: string): Promise<GeopontoDB[]> {
+export async function getSessionGeopoints(sessionId: string): Promise<GeopointDB[]> {
   try {
-    return db.getAllSync<GeopontoDB>(
-      `SELECT * FROM geopontos WHERE sessao_id = ? ORDER BY timestamp ASC`,
-      [sessaoId]
+    return db.getAllSync<GeopointDB>(
+      `SELECT * FROM geopoints WHERE session_id = ? ORDER BY timestamp ASC`,
+      [sessionId]
     );
   } catch (error) {
-    logger.error('database', 'Erro ao buscar geopontos da sessão', { error: String(error) });
+    logger.error('database', 'Error fetching session geopoints', { error: String(error) });
     return [];
   }
 }
 
 /**
- * Busca geopontos por período
+ * Cleans old geopoints (older than X days, only if synced)
  */
-export async function getGeopontosPorPeriodo(
-  userId: string,
-  dataInicio: string,
-  dataFim: string
-): Promise<GeopontoDB[]> {
-  try {
-    return db.getAllSync<GeopontoDB>(
-      `SELECT * FROM geopontos WHERE user_id = ? AND timestamp >= ? AND timestamp <= ? ORDER BY timestamp ASC`,
-      [userId, dataInicio, dataFim]
-    );
-  } catch (error) {
-    logger.error('database', 'Erro ao buscar geopontos por período', { error: String(error) });
-    return [];
-  }
-}
-
-/**
- * Busca último geoponto do usuário
- */
-export async function getUltimoGeoponto(userId: string): Promise<GeopontoDB | null> {
-  try {
-    return db.getFirstSync<GeopontoDB>(
-      `SELECT * FROM geopontos WHERE user_id = ? ORDER BY timestamp DESC LIMIT 1`,
-      [userId]
-    );
-  } catch (error) {
-    logger.error('database', 'Erro ao buscar último geoponto', { error: String(error) });
-    return null;
-  }
-}
-
-/**
- * Limpa geopontos antigos (mais de X dias)
- */
-export async function limparGeopontosAntigos(diasManter: number = 90): Promise<number> {
+export async function cleanOldGeopoints(daysToKeep: number = 7): Promise<number> {
   try {
     const cutoff = new Date();
-    cutoff.setDate(cutoff.getDate() - diasManter);
+    cutoff.setDate(cutoff.getDate() - daysToKeep);
     
     const result = db.runSync(
-      `DELETE FROM geopontos WHERE timestamp < ?`,
+      `DELETE FROM geopoints WHERE timestamp < ? AND synced_at IS NOT NULL`,
       [cutoff.toISOString()]
     );
     
-    const deletados = result.changes || 0;
-    if (deletados > 0) {
-      logger.info('database', `Geopontos antigos limpos: ${deletados}`);
+    const deleted = result.changes || 0;
+    if (deleted > 0) {
+      logger.info('database', `Old geopoints cleaned: ${deleted}`);
     }
-    return deletados;
+    return deleted;
   } catch (error) {
-    logger.error('database', 'Erro ao limpar geopontos', { error: String(error) });
+    logger.error('database', 'Error cleaning geopoints', { error: String(error) });
     return 0;
   }
 }
 
 /**
- * Estatísticas de geopontos
+ * Geopoint stats
  */
-export async function getGeopontosStats(userId: string): Promise<{
+export async function getGeopointStats(userId: string): Promise<{
   total: number;
-  hoje: number;
-  porFonte: Record<GeopontoFonte, number>;
-  ultimoTimestamp: string | null;
+  pending: number;
+  bySource: { polling: number; geofence: number; heartbeat: number; background: number; manual: number };
+  lastTimestamp: string | null;
 }> {
   try {
-    const hoje = new Date().toISOString().split('T')[0];
-    
     const total = db.getFirstSync<{ count: number }>(
-      `SELECT COUNT(*) as count FROM geopontos WHERE user_id = ?`,
+      `SELECT COUNT(*) as count FROM geopoints WHERE user_id = ?`,
       [userId]
     );
     
-    const hojeCount = db.getFirstSync<{ count: number }>(
-      `SELECT COUNT(*) as count FROM geopontos WHERE user_id = ? AND timestamp LIKE ?`,
-      [userId, `${hoje}%`]
-    );
-    
-    const ultimo = db.getFirstSync<{ timestamp: string }>(
-      `SELECT timestamp FROM geopontos WHERE user_id = ? ORDER BY timestamp DESC LIMIT 1`,
+    const pending = db.getFirstSync<{ count: number }>(
+      `SELECT COUNT(*) as count FROM geopoints WHERE user_id = ? AND synced_at IS NULL`,
       [userId]
     );
-
-    // Conta por fonte
-    const fontes: GeopontoFonte[] = ['polling', 'geofence', 'heartbeat', 'background', 'manual'];
-    const porFonte: Record<GeopontoFonte, number> = {
-      polling: 0,
-      geofence: 0,
-      heartbeat: 0,
-      background: 0,
-      manual: 0,
+    
+    const bySource: { polling: number; geofence: number; heartbeat: number; background: number; manual: number } = {
+      polling: 0, geofence: 0, heartbeat: 0, background: 0, manual: 0
     };
-
-    for (const fonte of fontes) {
+    
+    const sources = ['polling', 'geofence', 'heartbeat', 'background', 'manual'] as const;
+    for (const source of sources) {
       const count = db.getFirstSync<{ count: number }>(
-        `SELECT COUNT(*) as count FROM geopontos WHERE user_id = ? AND fonte = ?`,
-        [userId, fonte]
+        `SELECT COUNT(*) as count FROM geopoints WHERE user_id = ? AND source = ?`,
+        [userId, source]
       );
-      porFonte[fonte] = count?.count || 0;
+      bySource[source] = count?.count || 0;
     }
+    
+    const last = db.getFirstSync<{ timestamp: string }>(
+      `SELECT timestamp FROM geopoints WHERE user_id = ? ORDER BY timestamp DESC LIMIT 1`,
+      [userId]
+    );
     
     return {
       total: total?.count || 0,
-      hoje: hojeCount?.count || 0,
-      porFonte,
-      ultimoTimestamp: ultimo?.timestamp || null,
+      pending: pending?.count || 0,
+      bySource,
+      lastTimestamp: last?.timestamp || null,
     };
   } catch (error) {
-    logger.error('database', 'Erro ao obter stats de geopontos', { error: String(error) });
-    return { 
-      total: 0, 
-      hoje: 0, 
-      porFonte: { polling: 0, geofence: 0, heartbeat: 0, background: 0, manual: 0 },
-      ultimoTimestamp: null 
+    logger.error('database', 'Error getting geopoint stats', { error: String(error) });
+    return {
+      total: 0,
+      pending: 0,
+      bySource: { polling: 0, geofence: 0, heartbeat: 0, background: 0, manual: 0 },
+      lastTimestamp: null 
     };
   }
 }
 
 /**
- * Busca geopontos para sync (não sincronizados)
+ * Fetches geopoints for sync (not synced)
  */
-export async function getGeopontosParaSync(userId: string, limit: number = 100): Promise<GeopontoDB[]> {
+export async function getGeopointsForSync(userId: string, limit: number = 100): Promise<GeopointDB[]> {
   try {
-    return db.getAllSync<GeopontoDB>(
-      `SELECT * FROM geopontos WHERE user_id = ? AND synced_at IS NULL ORDER BY timestamp ASC LIMIT ?`,
+    return db.getAllSync<GeopointDB>(
+      `SELECT * FROM geopoints WHERE user_id = ? AND synced_at IS NULL ORDER BY timestamp ASC LIMIT ?`,
       [userId, limit]
     );
   } catch (error) {
-    logger.error('database', 'Erro ao buscar geopontos para sync', { error: String(error) });
+    logger.error('database', 'Error fetching geopoints for sync', { error: String(error) });
     return [];
   }
 }
 
 /**
- * Marca geopontos como sincronizados
+ * Marks geopoints as synced
  */
-export async function marcarGeopontosSincronizados(ids: string[]): Promise<void> {
+export async function markGeopointsSynced(ids: string[]): Promise<void> {
   if (ids.length === 0) return;
   
   try {
     const placeholders = ids.map(() => '?').join(',');
     db.runSync(
-      `UPDATE geopontos SET synced_at = ? WHERE id IN (${placeholders})`,
+      `UPDATE geopoints SET synced_at = ? WHERE id IN (${placeholders})`,
       [now(), ...ids]
     );
-    logger.debug('database', `${ids.length} geopontos marcados como sincronizados`);
+    logger.debug('database', `${ids.length} geopoints marked as synced`);
   } catch (error) {
-    logger.error('database', 'Erro ao marcar geopontos sincronizados', { error: String(error) });
+    logger.error('database', 'Error marking geopoints synced', { error: String(error) });
   }
 }
 
 // ============================================
-// HEARTBEAT LOG (LEGADO - manter por enquanto)
+// HEARTBEAT LOG (LEGACY - keep for now)
 // ============================================
 
 /**
- * Registra um heartbeat
- * NOTA: Esta função será substituída por incrementarTelemetria
+ * Registers a heartbeat
+ * NOTE: This function will be replaced by incrementTelemetry
  */
-export async function registrarHeartbeat(
+export async function registerHeartbeat(
   userId: string,
   latitude: number,
   longitude: number,
@@ -465,7 +412,7 @@ export async function registrarHeartbeat(
   insideFence: boolean,
   fenceId: string | null,
   fenceName: string | null,
-  sessaoId: string | null,
+  sessionId: string | null,
   batteryLevel: number | null
 ): Promise<string> {
   const id = generateUUID();
@@ -474,200 +421,200 @@ export async function registrarHeartbeat(
   try {
     db.runSync(
       `INSERT INTO heartbeat_log (id, user_id, timestamp, latitude, longitude, accuracy, 
-       inside_fence, fence_id, fence_name, sessao_id, battery_level, created_at)
+       inside_fence, fence_id, fence_name, session_id, battery_level, created_at)
        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       [id, userId, timestamp, latitude, longitude, accuracy, 
-       insideFence ? 1 : 0, fenceId, fenceName, sessaoId, batteryLevel, timestamp]
+       insideFence ? 1 : 0, fenceId, fenceName, sessionId, batteryLevel, timestamp]
     );
     
-    // Também incrementa telemetria agregada
-    await incrementarTelemetriaHeartbeat(userId, insideFence, batteryLevel);
+    // Also increment aggregated telemetry
+    await incrementHeartbeatTelemetry(userId, insideFence, batteryLevel);
     
-    logger.debug('heartbeat', 'Heartbeat registrado', { id, insideFence, fenceId });
+    logger.debug('heartbeat', 'Heartbeat registered', { id, insideFence, fenceId });
     return id;
   } catch (error) {
-    logger.error('database', 'Erro ao registrar heartbeat', { error: String(error) });
+    logger.error('database', 'Error registering heartbeat', { error: String(error) });
     throw error;
   }
 }
 
 /**
- * Busca último heartbeat de uma sessão
+ * Fetches last heartbeat of a session
  */
-export async function getUltimoHeartbeatSessao(sessaoId: string): Promise<HeartbeatLogDB | null> {
+export async function getLastSessionHeartbeat(sessionId: string): Promise<HeartbeatLogDB | null> {
   try {
     return db.getFirstSync<HeartbeatLogDB>(
-      `SELECT * FROM heartbeat_log WHERE sessao_id = ? ORDER BY timestamp DESC LIMIT 1`,
-      [sessaoId]
+      `SELECT * FROM heartbeat_log WHERE session_id = ? ORDER BY timestamp DESC LIMIT 1`,
+      [sessionId]
     );
   } catch (error) {
-    logger.error('database', 'Erro ao buscar último heartbeat', { error: String(error) });
+    logger.error('database', 'Error fetching last heartbeat', { error: String(error) });
     return null;
   }
 }
 
 /**
- * Busca último heartbeat do usuário (qualquer sessão)
+ * Fetches last heartbeat of user (any session)
  */
-export async function getUltimoHeartbeat(userId: string): Promise<HeartbeatLogDB | null> {
+export async function getLastHeartbeat(userId: string): Promise<HeartbeatLogDB | null> {
   try {
     return db.getFirstSync<HeartbeatLogDB>(
       `SELECT * FROM heartbeat_log WHERE user_id = ? ORDER BY timestamp DESC LIMIT 1`,
       [userId]
     );
   } catch (error) {
-    logger.error('database', 'Erro ao buscar último heartbeat', { error: String(error) });
+    logger.error('database', 'Error fetching last heartbeat', { error: String(error) });
     return null;
   }
 }
 
 /**
- * Busca heartbeats por período
+ * Fetches heartbeats by period
  */
-export async function getHeartbeatsPorPeriodo(
+export async function getHeartbeatsByPeriod(
   userId: string,
-  dataInicio: string,
-  dataFim: string
+  startDate: string,
+  endDate: string
 ): Promise<HeartbeatLogDB[]> {
   try {
     return db.getAllSync<HeartbeatLogDB>(
       `SELECT * FROM heartbeat_log WHERE user_id = ? AND timestamp >= ? AND timestamp <= ? ORDER BY timestamp DESC`,
-      [userId, dataInicio, dataFim]
+      [userId, startDate, endDate]
     );
   } catch (error) {
-    logger.error('database', 'Erro ao buscar heartbeats', { error: String(error) });
+    logger.error('database', 'Error fetching heartbeats', { error: String(error) });
     return [];
   }
 }
 
 /**
- * Limpa heartbeats antigos (mais de X dias)
+ * Cleans old heartbeats (older than X days)
  */
-export async function limparHeartbeatsAntigos(diasManter: number = 30): Promise<number> {
+export async function cleanOldHeartbeats(daysToKeep: number = 30): Promise<number> {
   try {
     const cutoff = new Date();
-    cutoff.setDate(cutoff.getDate() - diasManter);
+    cutoff.setDate(cutoff.getDate() - daysToKeep);
     
     const result = db.runSync(
       `DELETE FROM heartbeat_log WHERE timestamp < ?`,
       [cutoff.toISOString()]
     );
     
-    const deletados = result.changes || 0;
-    if (deletados > 0) {
-      logger.info('database', `Heartbeats antigos limpos: ${deletados}`);
+    const deleted = result.changes || 0;
+    if (deleted > 0) {
+      logger.info('database', `Old heartbeats cleaned: ${deleted}`);
     }
-    return deletados;
+    return deleted;
   } catch (error) {
-    logger.error('database', 'Erro ao limpar heartbeats', { error: String(error) });
+    logger.error('database', 'Error cleaning heartbeats', { error: String(error) });
     return 0;
   }
 }
 
 /**
- * Conta heartbeats (para stats)
+ * Counts heartbeats (for stats)
  */
 export async function getHeartbeatStats(userId: string): Promise<{
   total: number;
-  hoje: number;
-  ultimoTimestamp: string | null;
+  today: number;
+  lastTimestamp: string | null;
 }> {
   try {
-    const hoje = new Date().toISOString().split('T')[0];
+    const todayStr = new Date().toISOString().split('T')[0];
     
     const total = db.getFirstSync<{ count: number }>(
       `SELECT COUNT(*) as count FROM heartbeat_log WHERE user_id = ?`,
       [userId]
     );
     
-    const hojeCount = db.getFirstSync<{ count: number }>(
+    const todayCount = db.getFirstSync<{ count: number }>(
       `SELECT COUNT(*) as count FROM heartbeat_log WHERE user_id = ? AND timestamp LIKE ?`,
-      [userId, `${hoje}%`]
+      [userId, `${todayStr}%`]
     );
     
-    const ultimo = db.getFirstSync<{ timestamp: string }>(
+    const last = db.getFirstSync<{ timestamp: string }>(
       `SELECT timestamp FROM heartbeat_log WHERE user_id = ? ORDER BY timestamp DESC LIMIT 1`,
       [userId]
     );
     
     return {
       total: total?.count || 0,
-      hoje: hojeCount?.count || 0,
-      ultimoTimestamp: ultimo?.timestamp || null,
+      today: todayCount?.count || 0,
+      lastTimestamp: last?.timestamp || null,
     };
   } catch (error) {
-    logger.error('database', 'Erro ao obter stats de heartbeat', { error: String(error) });
-    return { total: 0, hoje: 0, ultimoTimestamp: null };
+    logger.error('database', 'Error getting heartbeat stats', { error: String(error) });
+    return { total: 0, today: 0, lastTimestamp: null };
   }
 }
 
 // ============================================
-// DEBUG - Funções para DevMonitor
+// DEBUG - Functions for DevMonitor
 // ============================================
 
 /**
- * Retorna contagem de registros em cada tabela
+ * Returns record counts for each table
  */
 export async function getDbStats(): Promise<{
-  locais_total: number;
-  locais_ativos: number;
-  locais_deletados: number;
-  registros_total: number;
-  registros_abertos: number;
+  locations_total: number;
+  locations_active: number;
+  locations_deleted: number;
+  records_total: number;
+  records_open: number;
   sync_logs: number;
-  geopontos_total: number;
+  geopoints_total: number;
   telemetry_days: number;
 }> {
   try {
-    const locaisTotal = db.getFirstSync<{ count: number }>(`SELECT COUNT(*) as count FROM locais`);
-    const locaisAtivos = db.getFirstSync<{ count: number }>(`SELECT COUNT(*) as count FROM locais WHERE status = 'active'`);
-    const locaisDeletados = db.getFirstSync<{ count: number }>(`SELECT COUNT(*) as count FROM locais WHERE status = 'deleted'`);
-    const registrosTotal = db.getFirstSync<{ count: number }>(`SELECT COUNT(*) as count FROM registros`);
-    const registrosAbertos = db.getFirstSync<{ count: number }>(`SELECT COUNT(*) as count FROM registros WHERE saida IS NULL`);
+    const locationsTotal = db.getFirstSync<{ count: number }>(`SELECT COUNT(*) as count FROM locations`);
+    const locationsActive = db.getFirstSync<{ count: number }>(`SELECT COUNT(*) as count FROM locations WHERE status = 'active'`);
+    const locationsDeleted = db.getFirstSync<{ count: number }>(`SELECT COUNT(*) as count FROM locations WHERE status = 'deleted'`);
+    const recordsTotal = db.getFirstSync<{ count: number }>(`SELECT COUNT(*) as count FROM records`);
+    const recordsOpen = db.getFirstSync<{ count: number }>(`SELECT COUNT(*) as count FROM records WHERE exit_at IS NULL`);
     const syncLogs = db.getFirstSync<{ count: number }>(`SELECT COUNT(*) as count FROM sync_log`);
-    const geopontosTotal = db.getFirstSync<{ count: number }>(`SELECT COUNT(*) as count FROM geopontos`);
+    const geopointsTotal = db.getFirstSync<{ count: number }>(`SELECT COUNT(*) as count FROM geopoints`);
     const telemetryDays = db.getFirstSync<{ count: number }>(`SELECT COUNT(*) as count FROM telemetry_daily`);
 
     return {
-      locais_total: locaisTotal?.count || 0,
-      locais_ativos: locaisAtivos?.count || 0,
-      locais_deletados: locaisDeletados?.count || 0,
-      registros_total: registrosTotal?.count || 0,
-      registros_abertos: registrosAbertos?.count || 0,
+      locations_total: locationsTotal?.count || 0,
+      locations_active: locationsActive?.count || 0,
+      locations_deleted: locationsDeleted?.count || 0,
+      records_total: recordsTotal?.count || 0,
+      records_open: recordsOpen?.count || 0,
       sync_logs: syncLogs?.count || 0,
-      geopontos_total: geopontosTotal?.count || 0,
+      geopoints_total: geopointsTotal?.count || 0,
       telemetry_days: telemetryDays?.count || 0,
     };
   } catch (error) {
-    logger.error('database', 'Erro ao obter stats', { error: String(error) });
+    logger.error('database', 'Error getting stats', { error: String(error) });
     return {
-      locais_total: 0,
-      locais_ativos: 0,
-      locais_deletados: 0,
-      registros_total: 0,
-      registros_abertos: 0,
+      locations_total: 0,
+      locations_active: 0,
+      locations_deleted: 0,
+      records_total: 0,
+      records_open: 0,
       sync_logs: 0,
-      geopontos_total: 0,
+      geopoints_total: 0,
       telemetry_days: 0,
     };
   }
 }
 
 /**
- * Limpa todos os dados locais (NUCLEAR OPTION)
+ * Clears all local data (NUCLEAR OPTION)
  */
 export async function resetDatabase(): Promise<void> {
   try {
-    logger.warn('database', '⚠️ RESET DATABASE - Limpando todos os dados locais');
+    logger.warn('database', '⚠️ RESET DATABASE - Clearing all local data');
     db.execSync(`DELETE FROM sync_log`);
-    db.execSync(`DELETE FROM registros`);
-    db.execSync(`DELETE FROM locais`);
-    db.execSync(`DELETE FROM geopontos`);
+    db.execSync(`DELETE FROM records`);
+    db.execSync(`DELETE FROM locations`);
+    db.execSync(`DELETE FROM geopoints`);
     db.execSync(`DELETE FROM heartbeat_log`);
     db.execSync(`DELETE FROM telemetry_daily`);
-    logger.info('database', '✅ Database resetado');
+    logger.info('database', '✅ Database reset');
   } catch (error) {
-    logger.error('database', 'Erro ao resetar database', { error: String(error) });
+    logger.error('database', 'Error resetting database', { error: String(error) });
     throw error;
   }
 }

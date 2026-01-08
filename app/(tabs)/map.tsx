@@ -6,6 +6,8 @@
  * - Long press on map = pin + name modal
  * - Long press on circle = delete
  * - Click on circle = adjust radius
+ * 
+ * REFACTORED: Using EN property names (name, radius, color)
  */
 
 import React from 'react';
@@ -97,19 +99,19 @@ export default function MapScreen() {
           <React.Fragment key={location.id}>
             <Circle
               center={{ latitude: location.latitude, longitude: location.longitude }}
-              radius={location.raio}
-              fillColor={withOpacity(location.cor, 0.25)}
-              strokeColor={location.cor}
+              radius={location.radius}
+              fillColor={withOpacity(location.color, 0.25)}
+              strokeColor={location.color}
               strokeWidth={2}
             />
             <Marker
               coordinate={{ latitude: location.latitude, longitude: location.longitude }}
-              title={location.nome}
-              description={`Radius: ${location.raio}m`}
+              title={location.name}
+              description={`Radius: ${location.radius}m`}
               onPress={() => handleCirclePress(location.id)}
               onCalloutPress={() => handleCirclePress(location.id)}
             >
-              <View style={[styles.marker, { backgroundColor: location.cor }]}>
+              <View style={[styles.marker, { backgroundColor: location.color }]}>
                 <Text style={styles.markerText}>📍</Text>
               </View>
             </Marker>
@@ -165,13 +167,13 @@ export default function MapScreen() {
             {locations.map((location) => (
               <TouchableOpacity
                 key={location.id}
-                style={[styles.locationChip, { borderColor: location.cor }]}
+                style={[styles.locationChip, { borderColor: location.color }]}
                 onPress={() => handleLocationChipPress(location.latitude, location.longitude)}
-                onLongPress={() => handleCircleLongPress(location.id, location.nome)}
+                onLongPress={() => handleCircleLongPress(location.id, location.name)}
               >
-                <View style={[styles.locationChipDot, { backgroundColor: location.cor }]} />
+                <View style={[styles.locationChipDot, { backgroundColor: location.color }]} />
                 <Text style={styles.locationChipText} numberOfLines={1}>
-                  {location.nome}
+                  {location.name}
                 </Text>
               </TouchableOpacity>
             ))}
@@ -288,9 +290,9 @@ export default function MapScreen() {
         >
           <TouchableOpacity activeOpacity={1} onPress={() => {}}>
             <View style={styles.radiusModal}>
-              <Text style={styles.radiusModalTitle}>📏 Adjust Radius</Text>
+              <Text style={styles.radiusModalTitle}>📐 Adjust Radius</Text>
               <Text style={styles.radiusModalSubtitle}>
-                {selectedLocation?.nome || 'Location'}
+                {selectedLocation?.name || 'Location'}
               </Text>
 
               <View style={styles.radiusOptions}>
@@ -299,14 +301,14 @@ export default function MapScreen() {
                     key={r}
                     style={[
                       styles.radiusOption,
-                      selectedLocation?.raio === r && styles.radiusOptionActive,
+                      selectedLocation?.radius === r && styles.radiusOptionActive,
                     ]}
                     onPress={() => handleChangeRadius(r)}
                   >
                     <Text
                       style={[
                         styles.radiusOptionText,
-                        selectedLocation?.raio === r && styles.radiusOptionTextActive,
+                        selectedLocation?.radius === r && styles.radiusOptionTextActive,
                       ]}
                     >
                       {r}m
@@ -320,7 +322,7 @@ export default function MapScreen() {
                 onPress={() => {
                   handleCloseRadiusModal();
                   if (selectedLocation) {
-                    handleCircleLongPress(selectedLocation.id, selectedLocation.nome);
+                    handleCircleLongPress(selectedLocation.id, selectedLocation.name);
                   }
                 }}
               >

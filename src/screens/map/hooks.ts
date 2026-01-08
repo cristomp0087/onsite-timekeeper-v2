@@ -2,6 +2,8 @@
  * Map Screen Hooks - OnSite Timekeeper
  * 
  * Custom hook containing all logic for the Map screen
+ * 
+ * REFACTORED: Updated to use English selectors and methods
  */
 
 import { useState, useRef, useEffect, useCallback } from 'react';
@@ -12,9 +14,9 @@ import type { TextInput } from 'react-native';
 
 import { 
   useLocationStore, 
-  selectLocais,
-  selectLocalizacaoAtual,
-  selectIsGeofencingAtivo,
+  selectLocations,
+  selectCurrentLocation,
+  selectIsGeofencingActive,
 } from '../../stores/locationStore';
 import { getRandomGeofenceColor } from '../../constants/colors';
 import {
@@ -38,17 +40,17 @@ export function useMapScreen() {
   const shakeAnimation = useRef(new Animated.Value(0)).current;
 
   // Store - selectors for state
-  const locations = useLocationStore(selectLocais);
-  const currentLocation = useLocationStore(selectLocalizacaoAtual);
-  const isMonitoringActive = useLocationStore(selectIsGeofencingAtivo);
+  const locations = useLocationStore(selectLocations);
+  const currentLocation = useLocationStore(selectCurrentLocation);
+  const isMonitoringActive = useLocationStore(selectIsGeofencingActive);
   
-  // Store - methods
-  const addLocation = useLocationStore(s => s.adicionarLocal);
-  const removeLocation = useLocationStore(s => s.removerLocal);
-  const editLocation = useLocationStore(s => s.editarLocal);
-  const startMonitoring = useLocationStore(s => s.iniciarMonitoramento);
-  const stopMonitoring = useLocationStore(s => s.pararMonitoramento);
-  const updateLocation = useLocationStore(s => s.atualizarLocalizacao);
+  // Store - methods (English names)
+  const addLocation = useLocationStore(s => s.addLocation);
+  const removeLocation = useLocationStore(s => s.removeLocation);
+  const editLocation = useLocationStore(s => s.editLocation);
+  const startMonitoring = useLocationStore(s => s.startMonitoring);
+  const stopMonitoring = useLocationStore(s => s.stopMonitoring);
+  const updateLocation = useLocationStore(s => s.updateLocation);
 
   // ============================================
   // STATE
@@ -202,11 +204,11 @@ export function useMapScreen() {
     setIsAdding(true);
     try {
       await addLocation({
-        nome: newLocationName.trim(),
+        name: newLocationName.trim(),
         latitude: tempPin.lat,
         longitude: tempPin.lng,
-        raio: newLocationRadius,
-        cor: getRandomGeofenceColor(),
+        radius: newLocationRadius,
+        color: getRandomGeofenceColor(),
       });
 
       // Clear everything
@@ -254,7 +256,7 @@ export function useMapScreen() {
     if (!selectedLocationId) return;
 
     try {
-      await editLocation(selectedLocationId, { raio: newRadius });
+      await editLocation(selectedLocationId, { radius: newRadius });
       setShowRadiusModal(false);
       setSelectedLocationId(null);
     } catch (error: any) {

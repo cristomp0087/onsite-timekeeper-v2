@@ -17,9 +17,9 @@
         "googleMapsApiKey": "AIzaSyBdITLu3Kr5OYPr8ZnhxIGVNFHIGEgvfKY"
       },
       "infoPlist": {
-        "NSLocationWhenInUseUsageDescription": "OnSite Timekeeper precisa acessar sua localização para mostrar onde você está no mapa.",
-        "NSLocationAlwaysAndWhenInUseUsageDescription": "OnSite Timekeeper precisa acessar sua localização em segundo plano para detectar automaticamente quando você entra ou sai do trabalho.",
-        "NSLocationAlwaysUsageDescription": "OnSite Timekeeper precisa acessar sua localização em segundo plano para registrar seu ponto automaticamente.",
+        "NSLocationWhenInUseUsageDescription": "OnSite Timekeeper needs your location to show where you are on the map.",
+        "NSLocationAlwaysAndWhenInUseUsageDescription": "OnSite Timekeeper needs background location access to automatically detect when you arrive at or leave work.",
+        "NSLocationAlwaysUsageDescription": "OnSite Timekeeper needs background location access to automatically track your work hours.",
         "UIBackgroundModes": [
           "location",
           "fetch",
@@ -30,7 +30,7 @@
     },
     "android": {
       "adaptiveIcon": {
-        "foregroundImage": "./assets/notification-icon.png",
+        "foregroundImage": "./assets/adaptive-icon.png",
         "backgroundColor": "#0B0D10"
       },
       "package": "com.onsiteclub.timekeeper",
@@ -63,9 +63,9 @@
       [
         "expo-location",
         {
-          "locationAlwaysAndWhenInUsePermission": "OnSite Timekeeper precisa acessar sua localização para registrar ponto automaticamente quando você chega ou sai do trabalho.",
-          "locationAlwaysPermission": "OnSite Timekeeper precisa acessar sua localização em segundo plano para funcionar corretamente mesmo com o app fechado.",
-          "locationWhenInUsePermission": "OnSite Timekeeper precisa acessar sua localização para mostrar sua posição no mapa.",
+          "locationAlwaysAndWhenInUsePermission": "OnSite Timekeeper needs your location to automatically track when you arrive at or leave work.",
+          "locationAlwaysPermission": "OnSite Timekeeper needs background location access to work properly even when the app is closed.",
+          "locationWhenInUsePermission": "OnSite Timekeeper needs your location to show your position on the map.",
           "isAndroidBackgroundLocationEnabled": true,
           "isAndroidForegroundServiceEnabled": true
         }

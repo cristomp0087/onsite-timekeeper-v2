@@ -1,4 +1,6 @@
-
+/**
+ * Tabs Layout - OnSite Timekeeper
+ */
 
 import React from 'react';
 import { Tabs } from 'expo-router';

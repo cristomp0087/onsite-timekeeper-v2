@@ -1,112 +1,92 @@
 /**
- * Database - OnSite Timekeeper
+ * Database Module - OnSite Timekeeper
  * 
- * Re-exporta todos os módulos para manter compatibilidade
- * com imports existentes: import { ... } from './database'
+ * Re-exports all database functionality
  */
 
-// ============================================
-// CORE - Instância, Init, Tipos, Helpers
-// ============================================
+// Core
 export {
-  // Instância
   db,
-  
-  // Inicialização
   initDatabase,
-  
-  // Tipos
-  type LocalStatus,
-  type RegistroTipo,
-  type SyncLogAction,
-  type SyncLogStatus,
-  type GeopontoFonte,
-  type LocalDB,
-  type RegistroDB,
-  type SyncLogDB,
-  type SessaoComputada,
-  type EstatisticasDia,
-  type HeartbeatLogDB,
-  type GeopontoDB,
-  type TelemetryDailyDB,
-  
-  // Helpers
   generateUUID,
   now,
   getToday,
-  calcularDistancia,
-  calcularDuracao,
-  formatarDuracao,
-  
-  // Sync Log
-  registrarSyncLog,
+  calculateDistance,
+  calculateDuration,
+  formatDuration,
+  registerSyncLog,
   getSyncLogs,
   getSyncLogsByEntity,
+  type LocationStatus,
+  type RecordType,
+  type SyncLogAction,
+  type SyncLogStatus,
+  type GeopointSource,
+  type LocationDB,
+  type RecordDB,
+  type SyncLogDB,
+  type ComputedSession,
+  type DayStats,
+  type HeartbeatLogDB,
+  type GeopointDB,
+  type TelemetryDailyDB,
 } from './core';
 
-// ============================================
-// LOCAIS - CRUD de Geofences
-// ============================================
+// Locations
 export {
-  type CriarLocalParams,
-  criarLocal,
-  getLocais,
-  getLocalById,
-  atualizarLocal,
-  removerLocal,
-  atualizarLastSeen,
-  getLocaisParaSync,
-  marcarLocalSincronizado,
-  upsertLocalFromSync,
-} from './locais';
+  createLocation,
+  getLocations,
+  getLocationById,
+  updateLocation,
+  removeLocation,
+  updateLastSeen,
+  getLocationsForSync,
+  markLocationSynced,
+  upsertLocationFromSync,
+  type CreateLocationParams,
+} from './locations';
 
-// ============================================
-// REGISTROS - CRUD de Sessões
-// ============================================
+// Records
 export {
-  type CriarRegistroParams,
-  criarRegistroEntrada,
-  registrarSaida,
-  getSessaoAberta,
-  getSessaoAtivaGlobal,
-  getSessoesHoje,
-  getSessoesPorPeriodo,
-  getEstatisticasHoje,
-  getRegistrosParaSync,
-  marcarRegistroSincronizado,
-  upsertRegistroFromSync,
-} from './registros';
+  createEntryRecord,
+  registerExit,
+  getOpenSession,
+  getGlobalActiveSession,
+  getTodaySessions,
+  getSessionsByPeriod,
+  getTodayStats,
+  getRecordsForSync,
+  markRecordSynced,
+  upsertRecordFromSync,
+  type CreateRecordParams,
+} from './records';
 
-// ============================================
-// TRACKING - Geopontos, Telemetria, Debug
-// ============================================
+// Tracking
 export {
-  // Telemetria
-  incrementarTelemetria,
-  incrementarTelemetriaGeofence,
-  incrementarTelemetriaHeartbeat,
-  getTelemetriaHoje,
-  getTelemetriaParaSync,
-  marcarTelemetriaSincronizada,
-  limparTelemetriaAntiga,
-  getTelemetriaStats,
+  // Telemetry
+  incrementTelemetry,
+  incrementGeofenceTelemetry,
+  incrementHeartbeatTelemetry,
+  getTodayTelemetry,
+  getTelemetryForSync,
+  markTelemetrySynced,
+  cleanOldTelemetry,
+  getTelemetryStats,
   
-  // Geopontos
-  registrarGeoponto,
-  getGeopontosSessao,
-  getGeopontosPorPeriodo,
-  getUltimoGeoponto,
-  limparGeopontosAntigos,
-  getGeopontosStats,
-  getGeopontosParaSync,
-  marcarGeopontosSincronizados,
+  // Geopoints
+  registerGeopoint,
+  getSessionGeopoints,
+  cleanOldGeopoints,
+  getGeopointStats,
+  getGeopointsForSync,
+  markGeopointsSynced,
   
-  // Heartbeat (legado)
-  registrarHeartbeat,
-  getUltimoHeartbeatSessao,
-  getUltimoHeartbeat,
-  getHeartbeatsPorPeriodo,
-  limparHeartbeatsAntigos,
+  // Heartbeat (legacy)
+  registerHeartbeat,
+  getLastSessionHeartbeat,
+  getLastHeartbeat,
+  getHeartbeatsByPeriod,
+  cleanOldHeartbeats,
   getHeartbeatStats,
   
   // Debug
