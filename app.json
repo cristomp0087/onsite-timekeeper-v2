@@ -9,11 +9,7 @@
     "userInterfaceStyle": "dark",
     "backgroundColor": "#0B0D10",
     "newArchEnabled": false,
-    "splash": {
-      "image": "./assets/splash-icon.png",
-      "resizeMode": "contain",
-      "backgroundColor": "#0B0D10"
-    },
+   
     "ios": {
       "supportsTablet": true,
       "bundleIdentifier": "com.onsiteclub.timekeeper",
@@ -34,12 +30,8 @@
     },
     "android": {
       "adaptiveIcon": {
-        "foregroundImage": "./assets/adaptive-icon.png",
+        "foregroundImage": "./assets/notification-icon.png",
         "backgroundColor": "#0B0D10"
-      },
-      "notification": {
-        "icon": "./assets/notification-icon.png",
-        "color": "#F5B700"
       },
       "package": "com.onsiteclub.timekeeper",
       "config": {
