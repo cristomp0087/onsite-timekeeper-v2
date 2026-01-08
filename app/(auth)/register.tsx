@@ -169,7 +169,7 @@ export default function RegisterScreen() {
 
           <View style={styles.linkContainer}>
             <Text style={styles.linkText}>Já tem conta? </Text>
-            <Link href="/(auth)/login" asChild>
+            <Link href="/(auth)/login">
               <Text style={styles.link}>Fazer login</Text>
             </Link>
           </View>

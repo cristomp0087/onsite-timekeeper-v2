@@ -95,9 +95,6 @@ interface LocationState {
   // Work locations
   locations: WorkLocation[];
   
-  // Legacy accessor (for compatibility)
-  locais: LocalDeTrabalho[];
-  
   // Monitoring state
   activeGeofenceId: string | null;
   isGeofencingActive: boolean;
@@ -115,20 +112,6 @@ interface LocationState {
   
   // Initialization
   isInitialized: boolean;
-
-  // Legacy accessors (for compatibility)
-  localizacaoAtual: Coordenadas | null;
-  precisao: number | null;
-  ultimaAtualizacao: number | null;
-  geofenceAtivo: string | null;
-  isGeofencingAtivo: boolean;
-  isBackgroundAtivo: boolean;
-  isPollingAtivo: boolean;
-  isHeartbeatAtivo: boolean;
-  isProcessandoEvento: boolean;
-  ultimoEvento: GeofenceEvent | null;
-  isInicializado: boolean;
-  permissoes: PermissoesStatus;
 
   // Actions
   initialize: () => Promise<void>;
@@ -181,7 +164,7 @@ let pollingTimer: ReturnType<typeof setInterval> | null = null;
 // ============================================
 
 export const useLocationStore = create<LocationState>((set, get) => ({
-  // New properties
+  // Properties
   permissions: { foreground: false, background: false },
   currentLocation: null,
   accuracy: null,
@@ -197,31 +180,6 @@ export const useLocationStore = create<LocationState>((set, get) => ({
   isProcessingEvent: false,
   lastEvent: null,
   isInitialized: false,
-
-  // Legacy property aliases (getters computed from new properties)
-  get permissoes() { return get().permissions; },
-  get localizacaoAtual() { return get().currentLocation; },
-  get precisao() { return get().accuracy; },
-  get ultimaAtualizacao() { return get().lastUpdate; },
-  get locais() { 
-    return get().locations.map(l => ({
-      id: l.id,
-      nome: l.name,
-      latitude: l.latitude,
-      longitude: l.longitude,
-      raio: l.radius,
-      cor: l.color,
-      status: l.status,
-    }));
-  },
-  get geofenceAtivo() { return get().activeGeofenceId; },
-  get isGeofencingAtivo() { return get().isGeofencingActive; },
-  get isBackgroundAtivo() { return get().isBackgroundActive; },
-  get isPollingAtivo() { return get().isPollingActive; },
-  get isHeartbeatAtivo() { return get().isHeartbeatActive; },
-  get isProcessandoEvento() { return get().isProcessingEvent; },
-  get ultimoEvento() { return get().lastEvent; },
-  get isInicializado() { return get().isInitialized; },
 
   initialize: async () => {
     if (get().isInitialized) return;
@@ -927,3 +885,42 @@ async function autoStartMonitoring(
     await get().startMonitoring();
   }
 }
+
+// ============================================
+// SELECTORS (use these in components)
+// ============================================
+
+/**
+ * Selector: locations in PT format (LocalDeTrabalho[])
+ * Usage: const locais = useLocationStore(selectLocais);
+ */
+export const selectLocais = (state: LocationState): LocalDeTrabalho[] =>
+  state.locations.map(l => ({
+    id: l.id,
+    nome: l.name,
+    latitude: l.latitude,
+    longitude: l.longitude,
+    raio: l.radius,
+    cor: l.color,
+    status: l.status,
+  }));
+
+/**
+ * Selector: active geofence ID (legacy name)
+ */
+export const selectGeofenceAtivo = (state: LocationState) => state.activeGeofenceId;
+
+/**
+ * Selector: is geofencing active (legacy name)
+ */
+export const selectIsGeofencingAtivo = (state: LocationState) => state.isGeofencingActive;
+
+/**
+ * Selector: current location (legacy name)
+ */
+export const selectLocalizacaoAtual = (state: LocationState) => state.currentLocation;
+
+/**
+ * Selector: permissions (legacy name)
+ */
+export const selectPermissoes = (state: LocationState) => state.permissions;

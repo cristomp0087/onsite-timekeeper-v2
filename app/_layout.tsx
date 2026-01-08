@@ -14,6 +14,7 @@ import '../src/lib/backgroundTasks';
 import { colors } from '../src/constants/colors';
 import { logger } from '../src/lib/logger';
 import { initDatabase } from '../src/lib/database';
+import { ErrorBoundary } from '../src/components/ErrorBoundary';
 import { GeofenceAlert } from '../src/components/GeofenceAlert';
 import { useAuthStore } from '../src/stores/authStore';
 import { useLocationStore } from '../src/stores/locationStore';
@@ -122,7 +123,7 @@ export default function RootLayout() {
   }
 
   return (
-    <>
+    <ErrorBoundary>
       <StatusBar style="light" />
       <Stack screenOptions={{ headerShown: false }}>
         <Stack.Screen name="(auth)" />
@@ -130,7 +131,7 @@ export default function RootLayout() {
       </Stack>
       
       <GeofenceAlert />
-    </>
+    </ErrorBoundary>
   );
 }
 

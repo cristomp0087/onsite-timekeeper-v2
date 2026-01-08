@@ -21,7 +21,6 @@ import {
   RefreshControl,
   Modal,
   TextInput,
-  Image,
   ViewStyle,
 } from 'react-native';
 
@@ -226,11 +225,10 @@ export default function HomeScreen() {
     >
       {/* HEADER */}
       <View style={styles.header}>
-        <Image 
-          source={require('../../assets/logo-text-white.png')} 
-          style={styles.headerLogo}
-          resizeMode="contain"
-        />
+        <View style={styles.headerLogoContainer}>
+          <Text style={styles.headerLogoEmoji}>📍</Text>
+          <Text style={styles.headerLogoText}>OnSite</Text>
+        </View>
         <Text style={styles.greeting}>Hello, {userName || 'Worker'}</Text>
       </View>
 

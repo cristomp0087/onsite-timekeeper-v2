@@ -14,7 +14,12 @@ import * as FileSystem from 'expo-file-system';
 import * as Sharing from 'expo-sharing';
 
 import { useAuthStore } from '../../stores/authStore';
-import { useLocationStore } from '../../stores/locationStore';
+import { 
+  useLocationStore, 
+  selectLocais, 
+  selectGeofenceAtivo, 
+  selectIsGeofencingAtivo 
+} from '../../stores/locationStore';
 import { useRegistroStore } from '../../stores/registroStore';
 import { useSyncStore } from '../../stores/syncStore';
 import { formatarDuracao } from '../../lib/database';
@@ -47,7 +52,12 @@ export function useHomeScreen() {
   // ============================================
   
   const userName = useAuthStore(s => s.getUserName());
-  const { locais, geofenceAtivo, isGeofencingAtivo } = useLocationStore();
+  
+  // Using selectors for locationStore (proper Zustand pattern)
+  const locais = useLocationStore(selectLocais);
+  const geofenceAtivo = useLocationStore(selectGeofenceAtivo);
+  const isGeofencingAtivo = useLocationStore(selectIsGeofencingAtivo);
+  
   const { 
     sessaoAtual, 
     recarregarDados, 

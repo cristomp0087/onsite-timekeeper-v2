@@ -22,6 +22,19 @@ export const styles = StyleSheet.create({
     alignItems: 'center', 
     marginBottom: 16 
   },
+  headerLogoContainer: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 6,
+  },
+  headerLogoEmoji: {
+    fontSize: 24,
+  },
+  headerLogoText: {
+    fontSize: 20,
+    fontWeight: 'bold',
+    color: colors.primary,
+  },
   headerLogo: { 
     width: 100, 
     height: 32 

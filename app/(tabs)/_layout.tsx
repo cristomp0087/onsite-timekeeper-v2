@@ -1,8 +1,4 @@
-/**
- * Tabs Layout - OnSite Timekeeper
- * 
- * Defines the bottom tab navigation
- */
+
 
 import React from 'react';
 import { Tabs } from 'expo-router';

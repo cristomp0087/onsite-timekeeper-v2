@@ -10,7 +10,12 @@ import type MapView from 'react-native-maps';
 import type { Region } from 'react-native-maps';
 import type { TextInput } from 'react-native';
 
-import { useLocationStore } from '../../stores/locationStore';
+import { 
+  useLocationStore, 
+  selectLocais,
+  selectLocalizacaoAtual,
+  selectIsGeofencingAtivo,
+} from '../../stores/locationStore';
 import { getRandomGeofenceColor } from '../../constants/colors';
 import {
   DEFAULT_REGION,
@@ -32,18 +37,18 @@ export function useMapScreen() {
   const nameInputRef = useRef<TextInput>(null);
   const shakeAnimation = useRef(new Animated.Value(0)).current;
 
-  // Store
-  const {
-    locais: locations,
-    localizacaoAtual: currentLocation,
-    isGeofencingAtivo: isMonitoringActive,
-    adicionarLocal: addLocation,
-    removerLocal: removeLocation,
-    editarLocal: editLocation,
-    iniciarMonitoramento: startMonitoring,
-    pararMonitoramento: stopMonitoring,
-    atualizarLocalizacao: updateLocation,
-  } = useLocationStore();
+  // Store - selectors for state
+  const locations = useLocationStore(selectLocais);
+  const currentLocation = useLocationStore(selectLocalizacaoAtual);
+  const isMonitoringActive = useLocationStore(selectIsGeofencingAtivo);
+  
+  // Store - methods
+  const addLocation = useLocationStore(s => s.adicionarLocal);
+  const removeLocation = useLocationStore(s => s.removerLocal);
+  const editLocation = useLocationStore(s => s.editarLocal);
+  const startMonitoring = useLocationStore(s => s.iniciarMonitoramento);
+  const stopMonitoring = useLocationStore(s => s.pararMonitoramento);
+  const updateLocation = useLocationStore(s => s.atualizarLocalizacao);
 
   // ============================================
   // STATE

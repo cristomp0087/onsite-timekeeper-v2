@@ -147,7 +147,7 @@ export default function LoginScreen() {
 
           <View style={styles.linkContainer}>
             <Text style={styles.linkText}>Don't have an account? </Text>
-            <Link href="/(auth)/register" asChild>
+            <Link href="/(auth)/register">
               <Text style={styles.link}>Create account</Text>
             </Link>
           </View>
