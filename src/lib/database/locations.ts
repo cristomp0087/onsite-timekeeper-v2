@@ -9,9 +9,9 @@ import {
   db,
   generateUUID,
   now,
-  registerSyncLog,
   type LocationDB,
 } from './core';
+import { trackMetric, trackFeatureUsed } from './analytics';
 
 // ============================================
 // TYPES
@@ -53,8 +53,13 @@ export async function createLocation(params: CreateLocationParams): Promise<stri
       ]
     );
 
-    // Sync log
-    await registerSyncLog(params.userId, 'location', id, 'create', null, params);
+    // Track analytics
+    try {
+      await trackMetric(params.userId, 'locations_created');
+      await trackFeatureUsed(params.userId, 'create_location');
+    } catch (e) {
+      // Ignore tracking errors
+    }
 
     logger.info('database', `📍 Location created: ${params.name}`, { id });
     return id;
@@ -88,6 +93,7 @@ export async function getLocationById(id: string): Promise<LocationDB | null> {
   }
 }
 
+// BACKWARD COMPATIBLE: 2 args (id, updates)
 export async function updateLocation(
   id: string,
   updates: Partial<Pick<LocationDB, 'name' | 'latitude' | 'longitude' | 'radius' | 'color'>>
@@ -146,8 +152,13 @@ export async function removeLocation(userId: string, id: string): Promise<void> 
       [now(), now(), id, userId]
     );
 
-    // Sync log
-    await registerSyncLog(userId, 'location', id, 'delete', { id }, null);
+    // Track analytics
+    try {
+      await trackMetric(userId, 'locations_deleted');
+      await trackFeatureUsed(userId, 'delete_location');
+    } catch (e) {
+      // Ignore tracking errors
+    }
 
     logger.info('database', `🗑️ Location removed (soft): ${id}`);
   } catch (error) {
@@ -196,11 +207,6 @@ export async function markLocationSynced(id: string): Promise<void> {
 
 /**
  * Upsert location from Supabase
- * 
- * RULES:
- * - If location EXISTS locally → update (including if status='deleted')
- * - If location DOES NOT EXIST and status='deleted' → DO NOT INSERT (was from another device, already deleted)
- * - If location DOES NOT EXIST and status='active' → insert normally
  */
 export async function upsertLocationFromSync(location: LocationDB): Promise<void> {
   try {
@@ -210,10 +216,7 @@ export async function upsertLocationFromSync(location: LocationDB): Promise<void
     );
 
     if (existing) {
-      // ============================================
-      // CASE 1: Location already exists locally
       // Update if server version is more recent
-      // ============================================
       if (new Date(location.updated_at) > new Date(existing.updated_at)) {
         db.runSync(
           `UPDATE locations SET name = ?, latitude = ?, longitude = ?, radius = ?, color = ?, status = ?, 
@@ -224,14 +227,9 @@ export async function upsertLocationFromSync(location: LocationDB): Promise<void
         logger.debug('sync', `Location updated from server: ${location.name} (status: ${location.status})`);
       }
     } else {
-      // ============================================
-      // CASE 2: Location DOES NOT exist locally
-      // ============================================
-      
       // If already deleted on server, DO NOT INSERT
-      // This prevents deleted locations from "coming back" after reinstalling the app
       if (location.status === 'deleted') {
-        logger.debug('sync', `⏭️ Location ignored (already deleted on server): ${location.name}`);
+        logger.debug('sync', `⭕ Location ignored (already deleted on server): ${location.name}`);
         return;
       }
       

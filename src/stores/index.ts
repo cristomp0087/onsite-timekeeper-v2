@@ -1,23 +1,43 @@
 /**
- * Stores Index - OnSite Timekeeper
+ * Stores - OnSite Timekeeper
  * 
- * Central exports for all Zustand stores
+ * Re-exports all stores and selectors
  */
 
 // ============================================
-// STORES
+// AUTH STORE
 // ============================================
 
-export { useLocationStore, selectLocations, selectActiveGeofence, selectIsGeofencingActive, selectCurrentLocation, selectPermissions } from './locationStore';
-export type { WorkLocation } from './locationStore';
+export { useAuthStore } from './authStore';
+export type { AuthState } from './authStore';
 
-export { useRecordStore, useFormatDuration } from './recordStore';
+// ============================================
+// LOCATION STORE
+// ============================================
 
-export { useWorkSessionStore } from './workSessionStore';
-export type { PendingAction, PauseState, PendingActionType } from './workSessionStore';
+export { 
+  useLocationStore,
+  selectLocations,
+  selectActiveGeofence,
+  selectIsGeofencingActive,
+  selectCurrentLocation,
+  selectPermissions,
+} from './locationStore';
+
+export type { 
+  WorkLocation,
+  LocationState,
+  LocationCoords,
+} from './locationStore';
+
+// ============================================
+// RECORD STORE
+// ============================================
+
+export { useRecordStore } from './recordStore';
+
+// ============================================
+// SYNC STORE
+// ============================================
 
 export { useSyncStore } from './syncStore';
-
-export { useAuthStore } from './authStore';
-
-export { useSettingsStore } from './settingsStore';

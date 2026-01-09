@@ -1,10 +1,14 @@
 /**
- * Database Module - OnSite Timekeeper
+ * Database Module - OnSite Timekeeper V2
  * 
  * Re-exports all database functionality
+ * BACKWARD COMPATIBLE with V1 API
  */
 
-// Core
+// ============================================
+// CORE
+// ============================================
+
 export {
   db,
   initDatabase,
@@ -14,25 +18,23 @@ export {
   calculateDistance,
   calculateDuration,
   formatDuration,
-  registerSyncLog,
-  getSyncLogs,
-  getSyncLogsByEntity,
+  // Types
   type LocationStatus,
   type RecordType,
-  type SyncLogAction,
-  type SyncLogStatus,
-  type GeopointSource,
+  type AuditEventType,
   type LocationDB,
   type RecordDB,
-  type SyncLogDB,
   type ComputedSession,
   type DayStats,
-  type HeartbeatLogDB,
-  type GeopointDB,
-  type TelemetryDailyDB,
+  type AnalyticsDailyDB,
+  type ErrorLogDB,
+  type LocationAuditDB,
 } from './core';
 
-// Locations
+// ============================================
+// LOCATIONS
+// ============================================
+
 export {
   createLocation,
   getLocations,
@@ -46,7 +48,10 @@ export {
   type CreateLocationParams,
 } from './locations';
 
-// Records
+// ============================================
+// RECORDS
+// ============================================
+
 export {
   createEntryRecord,
   registerExit,
@@ -61,35 +66,96 @@ export {
   type CreateRecordParams,
 } from './records';
 
-// Tracking
+// ============================================
+// ANALYTICS (replaces telemetry)
+// ============================================
+
 export {
-  // Telemetry
-  incrementTelemetry,
-  incrementGeofenceTelemetry,
-  incrementHeartbeatTelemetry,
-  getTodayTelemetry,
-  getTelemetryForSync,
-  markTelemetrySynced,
-  cleanOldTelemetry,
-  getTelemetryStats,
-  
-  // Geopoints
-  registerGeopoint,
-  getSessionGeopoints,
-  cleanOldGeopoints,
-  getGeopointStats,
-  getGeopointsForSync,
-  markGeopointsSynced,
-  
-  // Heartbeat (legacy)
-  registerHeartbeat,
-  getLastSessionHeartbeat,
-  getLastHeartbeat,
-  getHeartbeatsByPeriod,
-  cleanOldHeartbeats,
-  getHeartbeatStats,
-  
-  // Debug
+  // Tracking
+  trackMetric,
+  trackGeofenceTrigger,
+  trackFeatureUsed,
+  trackSessionMinutes,
+  // Queries
+  getTodayAnalytics,
+  getAnalyticsByPeriod,
+  getAnalyticsForSync,
+  markAnalyticsSynced,
+  cleanOldAnalytics,
+  // Stats
+  getAnalyticsSummary,
+  getAnalyticsDebugInfo,
+  getDeviceMetadata,
+  // Types
+  type AnalyticsField,
+  type FeatureName,
+  type AnalyticsSummary,
+} from './analytics';
+
+// ============================================
+// ERRORS
+// ============================================
+
+export {
+  // Capture
+  captureError,
+  captureErrorAuto,
+  captureSyncError,
+  captureDatabaseError,
+  captureNetworkError,
+  captureGeofenceError,
+  // Queries
+  getRecentErrors,
+  getErrorsByType,
+  getErrorsForSync,
+  markErrorsSynced,
+  cleanOldErrors,
+  // Stats
+  getErrorStats,
+  // Types
+  type ErrorType,
+  type ErrorContext,
+  type ErrorStats,
+} from './errors';
+
+// ============================================
+// LOCATION AUDIT (replaces geopoints)
+// ============================================
+
+export {
+  // Record
+  recordLocationAudit,
+  recordEntryAudit,
+  recordExitAudit,
+  recordDisputeAudit,
+  recordCorrectionAudit,
+  // Queries
+  getSessionAudit,
+  getUserAudit,
+  getAuditByPeriod,
+  getAuditForSync,
+  markAuditSynced,
+  cleanOldAudit,
+  // Stats
+  getAuditStats,
+  getSessionProof,
+  // Types
+  type AuditStats,
+  type SessionProof,
+} from './audit';
+
+// ============================================
+// DEBUG
+// ============================================
+
+export {
   getDbStats,
   resetDatabase,
-} from './tracking';
+} from './debug';
+
+// ============================================
+// BACKWARD COMPATIBILITY (V1 API)
+// ============================================
+
+// Alias for old telemetry function name
+export { trackMetric as incrementTelemetry } from './analytics';

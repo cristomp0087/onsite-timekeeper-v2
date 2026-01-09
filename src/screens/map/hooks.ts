@@ -50,7 +50,8 @@ export function useMapScreen() {
   const editLocation = useLocationStore(s => s.editLocation);
   const startMonitoring = useLocationStore(s => s.startMonitoring);
   const stopMonitoring = useLocationStore(s => s.stopMonitoring);
-  const updateLocation = useLocationStore(s => s.updateLocation);
+  // FIX: Use refreshCurrentLocation instead of updateLocation for getting GPS
+  const refreshCurrentLocation = useLocationStore(s => s.refreshCurrentLocation);
 
   // ============================================
   // STATE
@@ -90,7 +91,8 @@ export function useMapScreen() {
 
   // Update location on mount
   useEffect(() => {
-    updateLocation();
+    // FIX: Use refreshCurrentLocation (no args) instead of updateLocation
+    refreshCurrentLocation();
   }, []);
 
   // Update region when location changes
@@ -203,13 +205,14 @@ export function useMapScreen() {
 
     setIsAdding(true);
     try {
-      await addLocation({
-        name: newLocationName.trim(),
-        latitude: tempPin.lat,
-        longitude: tempPin.lng,
-        radius: newLocationRadius,
-        color: getRandomGeofenceColor(),
-      });
+      // FIX: addLocation now takes separate arguments, not an object
+      await addLocation(
+        newLocationName.trim(),
+        tempPin.lat,
+        tempPin.lng,
+        newLocationRadius,
+        getRandomGeofenceColor()
+      );
 
       // Clear everything
       setTempPin(null);

@@ -8,10 +8,12 @@
  * - Computed values
  * 
  * REFACTORED: All PT names removed, updated to use EN stores/methods
+ * UPDATED: Removed session finished modal, added day detail modal with session selection
+ * UPDATED: Added pending export handling for notification flow
  */
 
 import { useState, useEffect, useCallback, useMemo } from 'react';
-import { Alert, Share } from 'react-native';
+import { Alert, Share, Linking } from 'react-native';
 import * as FileSystem from 'expo-file-system';
 import * as Sharing from 'expo-sharing';
 
@@ -24,6 +26,7 @@ import {
 } from '../../stores/locationStore';
 import { useRecordStore } from '../../stores/recordStore';
 import { useSyncStore } from '../../stores/syncStore';
+import { useSettingsStore } from '../../stores/settingsStore';
 import { formatDuration } from '../../lib/database';
 import type { ComputedSession } from '../../lib/database';
 import { generateCompleteReport } from '../../lib/reports';
@@ -65,15 +68,16 @@ export function useHomeScreen() {
     reloadData, 
     registerExit, 
     registerEntry,
-    shareLastSession, 
-    lastFinishedSession, 
-    clearLastSession,
     getSessionsByPeriod,
     createManualRecord,
     editRecord,
     deleteRecord,
   } = useRecordStore();
   const { syncNow } = useSyncStore();
+
+  // Pending export from notification
+  const pendingReportExport = useSettingsStore(s => s.pendingReportExport);
+  const clearPendingReportExport = useSettingsStore(s => s.clearPendingReportExport);
 
   // ============================================
   // STATES
@@ -100,12 +104,24 @@ export function useHomeScreen() {
   const [currentMonth, setCurrentMonth] = useState(new Date());
   const [monthSessions, setMonthSessions] = useState<ComputedSession[]>([]);
   
-  // Expanded day (shows report)
+  // Expanded day (for week view inline - DEPRECATED, keeping for compatibility)
   const [expandedDay, setExpandedDay] = useState<string | null>(null);
   
-  // Multi-select (by day)
+  // Multi-select DAYS (for batch export)
   const [selectionMode, setSelectionMode] = useState(false);
   const [selectedDays, setSelectedDays] = useState<Set<string>>(new Set());
+
+  // NEW: Day Detail Modal
+  const [showDayModal, setShowDayModal] = useState(false);
+  const [selectedDayForModal, setSelectedDayForModal] = useState<Date | null>(null);
+  
+  // NEW: Session selection (inside day modal)
+  const [selectedSessions, setSelectedSessions] = useState<Set<string>>(new Set());
+
+  // NEW: Export modal (for notification-triggered export)
+  const [showExportModal, setShowExportModal] = useState(false);
+  const [exportModalSessions, setExportModalSessions] = useState<ComputedSession[]>([]);
+  const [exportModalPeriod, setExportModalPeriod] = useState<string>('');
 
   // Manual entry modal
   const [showManualModal, setShowManualModal] = useState(false);
@@ -118,8 +134,7 @@ export function useHomeScreen() {
   const [manualExitM, setManualExitM] = useState('');
   const [manualPause, setManualPause] = useState('');
 
-  // Session finished modal
-  const [showSessionFinishedModal, setShowSessionFinishedModal] = useState(false);
+  // REMOVED: showSessionFinishedModal - was causing confusion
 
   // ============================================
   // DERIVED STATE
@@ -131,8 +146,100 @@ export function useHomeScreen() {
   const weekStart = getWeekStart(currentWeek);
   const weekEnd = getWeekEnd(currentWeek);
 
+  // Sessions for day modal
+  const dayModalSessions = useMemo(() => {
+    if (!selectedDayForModal) return [];
+    return sessions.filter(s => {
+      const sessionDate = new Date(s.entry_at);
+      return isSameDay(sessionDate, selectedDayForModal);
+    });
+  }, [selectedDayForModal, sessions]);
+
   // ============================================
-  // TIMER EFFECT - Main for when paused
+  // PENDING EXPORT EFFECT (from notification)
+  // ============================================
+
+  useEffect(() => {
+    if (pendingReportExport?.trigger) {
+      handlePendingExport();
+    }
+  }, [pendingReportExport]);
+
+  const handlePendingExport = async () => {
+    if (!pendingReportExport) return;
+
+    // Determine period
+    let periodStart: Date;
+    let periodEnd: Date;
+
+    if (pendingReportExport.periodStart && pendingReportExport.periodEnd) {
+      periodStart = new Date(pendingReportExport.periodStart);
+      periodEnd = new Date(pendingReportExport.periodEnd);
+    } else {
+      // Default to current week
+      periodStart = getWeekStart(new Date());
+      periodEnd = getWeekEnd(new Date());
+    }
+
+    // Fetch sessions for the period
+    const sessionsForPeriod = await getSessionsByPeriod(
+      periodStart.toISOString(),
+      periodEnd.toISOString()
+    );
+
+    const finishedSessions = sessionsForPeriod.filter(s => s.exit_at);
+
+    if (finishedSessions.length === 0) {
+      Alert.alert('No Sessions', 'No completed sessions found for this period.');
+      clearPendingReportExport();
+      return;
+    }
+
+    // Calculate total hours
+    const totalMinutes = finishedSessions.reduce((acc, s) => {
+      const pauseMin = s.pause_minutes || 0;
+      return acc + Math.max(0, s.duration_minutes - pauseMin);
+    }, 0);
+
+    // Set export modal data
+    setExportModalSessions(finishedSessions);
+    setExportModalPeriod(formatDateRange(periodStart, periodEnd));
+
+    // Clear the pending flag
+    clearPendingReportExport();
+
+    // Show export options
+    const { favoriteContact } = useSettingsStore.getState();
+    
+    const options: any[] = [
+      { text: 'Cancel', style: 'cancel' },
+    ];
+
+    // Add favorite option if configured (put it first for quick access)
+    if (favoriteContact) {
+      const icon = favoriteContact.type === 'whatsapp' ? '📱' : '📧';
+      const label = favoriteContact.name || favoriteContact.value;
+      options.push({
+        text: `${icon} Send to ${label}`,
+        onPress: () => sendToFavorite(finishedSessions),
+      });
+    }
+
+    // Standard options
+    options.push(
+      { text: '💬 Share', onPress: () => exportAsText(finishedSessions) },
+      { text: '📄 Save File', onPress: () => exportAsFile(finishedSessions) },
+    );
+
+    Alert.alert(
+      '📊 Weekly Report',
+      `${formatDuration(totalMinutes)} worked\n${formatDateRange(periodStart, periodEnd)}\n\n${finishedSessions.length} session(s)`,
+      options
+    );
+  };
+
+  // ============================================
+  // TIMER EFFECT
   // ============================================
 
   useEffect(() => {
@@ -199,14 +306,7 @@ export function useHomeScreen() {
     return () => clearInterval(interval);
   }, [isPaused, pauseStartTimestamp, accumulatedPauseSeconds, currentSession]);
 
-  // Session finished modal effect
-  useEffect(() => {
-    if (lastFinishedSession) {
-      setShowSessionFinishedModal(true);
-    } else {
-      setShowSessionFinishedModal(false);
-    }
-  }, [lastFinishedSession]);
+  // REMOVED: Session finished modal effect - was causing confusion
 
   // ============================================
   // LOAD DATA
@@ -241,20 +341,6 @@ export function useHomeScreen() {
       loadMonthSessions();
     }
   }, [currentSession]);
-
-  // ============================================
-  // SESSION MODAL HANDLERS
-  // ============================================
-
-  const handleDismissSessionModal = () => {
-    setShowSessionFinishedModal(false);
-    clearLastSession();
-  };
-
-  const handleShareSession = async () => {
-    await shareLastSession();
-    handleDismissSessionModal();
-  };
 
   // ============================================
   // REFRESH
@@ -326,6 +412,15 @@ export function useHomeScreen() {
               setAccumulatedPauseSeconds(0);
               setPauseStartTimestamp(null);
               setPauseTimer('00:00:00');
+              
+              // Reload data to show the finished session
+              if (viewMode === 'week') {
+                loadWeekSessions();
+              } else {
+                loadMonthSessions();
+              }
+              
+              // REMOVED: No longer showing session finished modal
             } catch (error: any) {
               Alert.alert('Error', error.message || 'Could not stop session');
             }
@@ -478,7 +573,7 @@ export function useHomeScreen() {
   };
 
   // ============================================
-  // SELECTION (BY DAY)
+  // DAY SELECTION (for batch export)
   // ============================================
 
   const toggleSelectDay = (dayKey: string) => {
@@ -494,13 +589,20 @@ export function useHomeScreen() {
     setSelectedDays(newSet);
   };
 
+  // ============================================
+  // DAY PRESS HANDLERS (UPDATED!)
+  // ============================================
+
   const handleDayPress = (dayKey: string, hasSessions: boolean) => {
     if (selectionMode) {
+      // In selection mode, toggle day selection
       if (hasSessions) {
         toggleSelectDay(dayKey);
       }
-    } else if (hasSessions) {
-      setExpandedDay(expandedDay === dayKey ? null : dayKey);
+    } else {
+      // NEW: Open day modal instead of expanding inline
+      const date = new Date(dayKey.replace(/-/g, '/'));
+      openDayModal(date);
     }
   };
 
@@ -508,12 +610,53 @@ export function useHomeScreen() {
     if (!hasSessions) return;
     
     if (!selectionMode) {
+      // Enter selection mode
       setSelectionMode(true);
       setSelectedDays(new Set([dayKey]));
       setExpandedDay(null);
+      setShowDayModal(false);
     } else {
       toggleSelectDay(dayKey);
     }
+  };
+
+  // ============================================
+  // DAY MODAL (NEW!)
+  // ============================================
+
+  const openDayModal = (date: Date) => {
+    setSelectedDayForModal(date);
+    setSelectedSessions(new Set());
+    setShowDayModal(true);
+  };
+
+  const closeDayModal = () => {
+    setShowDayModal(false);
+    setSelectedDayForModal(null);
+    setSelectedSessions(new Set());
+  };
+
+  // ============================================
+  // SESSION SELECTION (NEW!)
+  // ============================================
+
+  const toggleSelectSession = (sessionId: string) => {
+    const newSet = new Set(selectedSessions);
+    if (newSet.has(sessionId)) {
+      newSet.delete(sessionId);
+    } else {
+      newSet.add(sessionId);
+    }
+    setSelectedSessions(newSet);
+  };
+
+  const selectAllSessions = () => {
+    const finishedSessions = dayModalSessions.filter(s => s.exit_at);
+    setSelectedSessions(new Set(finishedSessions.map(s => s.id)));
+  };
+
+  const deselectAllSessions = () => {
+    setSelectedSessions(new Set());
   };
 
   // ============================================
@@ -530,6 +673,8 @@ export function useHomeScreen() {
     setManualExitM('00');
     setManualPause('');
     setShowManualModal(true);
+    // Close day modal if open
+    setShowDayModal(false);
   };
 
   const handleSaveManual = async () => {
@@ -596,7 +741,7 @@ export function useHomeScreen() {
   };
 
   // ============================================
-  // DELETE DAY
+  // DELETE
   // ============================================
 
   const handleDeleteDay = (_dayKey: string, daySessions: ComputedSession[]) => {
@@ -617,10 +762,83 @@ export function useHomeScreen() {
                 await deleteRecord(session.id);
               }
               setExpandedDay(null);
+              closeDayModal();
               if (viewMode === 'week') {
                 loadWeekSessions();
               } else {
                 loadMonthSessions();
+              }
+            } catch (error: any) {
+              Alert.alert('Error', error.message || 'Could not delete');
+            }
+          },
+        },
+      ]
+    );
+  };
+
+  const handleDeleteSession = (session: ComputedSession) => {
+    Alert.alert(
+      '🗑️ Delete Session',
+      `Delete this session at "${session.location_name}"?`,
+      [
+        { text: 'Cancel', style: 'cancel' },
+        {
+          text: 'Delete',
+          style: 'destructive',
+          onPress: async () => {
+            try {
+              await deleteRecord(session.id);
+              // Remove from selection
+              const newSelected = new Set(selectedSessions);
+              newSelected.delete(session.id);
+              setSelectedSessions(newSelected);
+              // Reload
+              if (viewMode === 'week') {
+                loadWeekSessions();
+              } else {
+                loadMonthSessions();
+              }
+              // Close modal if no more sessions
+              const remaining = dayModalSessions.filter(s => s.id !== session.id && s.exit_at);
+              if (remaining.length === 0) {
+                closeDayModal();
+              }
+            } catch (error: any) {
+              Alert.alert('Error', error.message || 'Could not delete');
+            }
+          },
+        },
+      ]
+    );
+  };
+
+  const handleDeleteSelectedSessions = () => {
+    if (selectedSessions.size === 0) return;
+
+    Alert.alert(
+      '🗑️ Delete Selected',
+      `Delete ${selectedSessions.size} selected session(s)?`,
+      [
+        { text: 'Cancel', style: 'cancel' },
+        {
+          text: 'Delete',
+          style: 'destructive',
+          onPress: async () => {
+            try {
+              for (const sessionId of selectedSessions) {
+                await deleteRecord(sessionId);
+              }
+              setSelectedSessions(new Set());
+              if (viewMode === 'week') {
+                loadWeekSessions();
+              } else {
+                loadMonthSessions();
+              }
+              // Check if modal should close
+              const remaining = dayModalSessions.filter(s => !selectedSessions.has(s.id) && s.exit_at);
+              if (remaining.length === 0) {
+                closeDayModal();
               }
             } catch (error: any) {
               Alert.alert('Error', error.message || 'Could not delete');
@@ -641,6 +859,7 @@ export function useHomeScreen() {
     try {
       await Share.share({ message: txt, title: 'Time Report' });
       cancelSelection();
+      closeDayModal();
     } catch (error) {
       console.error('Error sharing:', error);
     }
@@ -666,12 +885,14 @@ export function useHomeScreen() {
       }
       
       cancelSelection();
+      closeDayModal();
     } catch (error) {
       console.error('Error exporting file:', error);
       Alert.alert('Error', 'Could not create file');
     }
   };
 
+  // Export from main calendar (days selection or full period)
   const handleExport = async () => {
     let sessionsToExport: ComputedSession[];
     
@@ -692,15 +913,123 @@ export function useHomeScreen() {
       return;
     }
 
+    const { favoriteContact } = useSettingsStore.getState();
+
+    // Build options dynamically
+    const options: any[] = [
+      { text: 'Cancel', style: 'cancel' },
+    ];
+
+    // Add favorite option if configured
+    if (favoriteContact) {
+      const icon = favoriteContact.type === 'whatsapp' ? '📱' : '📧';
+      const label = favoriteContact.name || favoriteContact.value;
+      options.push({
+        text: `${icon} ${label}`,
+        onPress: () => sendToFavorite(finishedSessions),
+      });
+    }
+
+    // Standard options
+    options.push(
+      { text: '💬 Share', onPress: () => exportAsText(finishedSessions) },
+      { text: '📄 File', onPress: () => exportAsFile(finishedSessions) },
+    );
+
     Alert.alert(
       '📤 Export Report',
       'How would you like to export?',
-      [
-        { text: 'Cancel', style: 'cancel' },
-        { text: '💬 Text (WhatsApp)', onPress: () => exportAsText(finishedSessions) },
-        { text: '📄 File', onPress: () => exportAsFile(finishedSessions) },
-      ]
+      options
     );
+  };
+
+  // NEW: Send to favorite contact
+  const sendToFavorite = async (sessionsToExport: ComputedSession[]) => {
+    const { favoriteContact } = useSettingsStore.getState();
+    if (!favoriteContact) {
+      Alert.alert('No Favorite', 'Please set a favorite contact in Settings > Auto-Report');
+      return;
+    }
+
+    const report = generateCompleteReport(sessionsToExport, userName || undefined);
+
+    try {
+      if (favoriteContact.type === 'whatsapp') {
+        // Open WhatsApp with pre-filled message
+        const phone = favoriteContact.value.replace(/\D/g, '');
+        const url = `whatsapp://send?phone=${phone}&text=${encodeURIComponent(report)}`;
+        
+        const canOpen = await Linking.canOpenURL(url);
+        if (canOpen) {
+          await Linking.openURL(url);
+          closeDayModal();
+          cancelSelection();
+        } else {
+          Alert.alert('Error', 'WhatsApp is not installed');
+        }
+      } else {
+        // Open email composer
+        const subject = encodeURIComponent('Time Report - OnSite Timekeeper');
+        const body = encodeURIComponent(report);
+        const url = `mailto:${favoriteContact.value}?subject=${subject}&body=${body}`;
+        await Linking.openURL(url);
+        closeDayModal();
+        cancelSelection();
+      }
+    } catch (error) {
+      console.error('Error sending to favorite:', error);
+      Alert.alert('Error', 'Could not open app');
+    }
+  };
+
+  // NEW: Export from day modal (specific sessions)
+  const handleExportFromModal = async () => {
+    if (!selectedDayForModal) return;
+
+    const finishedSessions = dayModalSessions.filter(s => s.exit_at);
+    
+    let sessionsToExport: ComputedSession[];
+    
+    if (selectedSessions.size > 0) {
+      // Export only selected sessions
+      sessionsToExport = finishedSessions.filter(s => selectedSessions.has(s.id));
+    } else {
+      // Export all sessions from the day
+      sessionsToExport = finishedSessions;
+    }
+
+    if (sessionsToExport.length === 0) {
+      Alert.alert('Warning', 'No sessions to export');
+      return;
+    }
+
+    const { favoriteContact } = useSettingsStore.getState();
+    const exportLabel = selectedSessions.size > 0 
+      ? `Export ${selectedSessions.size} session(s)?`
+      : `Export all ${sessionsToExport.length} session(s) from this day?`;
+
+    // Build options dynamically
+    const options: any[] = [
+      { text: 'Cancel', style: 'cancel' },
+    ];
+
+    // Add favorite option if configured
+    if (favoriteContact) {
+      const icon = favoriteContact.type === 'whatsapp' ? '📱' : '📧';
+      const label = favoriteContact.name || favoriteContact.value;
+      options.push({
+        text: `${icon} ${label}`,
+        onPress: () => sendToFavorite(sessionsToExport),
+      });
+    }
+
+    // Standard options
+    options.push(
+      { text: '💬 Share', onPress: () => exportAsText(sessionsToExport) },
+      { text: '📄 File', onPress: () => exportAsFile(sessionsToExport) },
+    );
+
+    Alert.alert('📤 Export', exportLabel, options);
   };
 
   // ============================================
@@ -712,7 +1041,6 @@ export function useHomeScreen() {
     userName,
     locations,
     currentSession,
-    lastFinishedSession,
     activeLocation,
     canRestart,
     isGeofencingActive,
@@ -733,21 +1061,37 @@ export function useHomeScreen() {
     monthCalendarDays,
     weekTotalMinutes,
     monthTotalMinutes,
-    expandedDay,
+    expandedDay, // Keep for backward compat, but not used in new UI
     
-    // Selection
+    // Day selection (batch)
     selectionMode,
     selectedDays,
     cancelSelection,
     
-    // Modals
+    // NEW: Day Modal
+    showDayModal,
+    selectedDayForModal,
+    dayModalSessions,
+    openDayModal,
+    closeDayModal,
+    
+    // NEW: Session selection
+    selectedSessions,
+    toggleSelectSession,
+    selectAllSessions,
+    deselectAllSessions,
+    
+    // NEW: Export modal (notification triggered)
+    showExportModal,
+    exportModalSessions,
+    exportModalPeriod,
+    
+    // Manual entry modal
     showManualModal,
     setShowManualModal,
-    showSessionFinishedModal,
     manualDate,
     manualLocationId,
     setManualLocationId,
-    // Separate HH:MM fields
     manualEntryH,
     setManualEntryH,
     manualEntryM,
@@ -786,10 +1130,12 @@ export function useHomeScreen() {
     // Modal handlers
     openManualEntry,
     handleSaveManual,
-    handleDismissSessionModal,
-    handleShareSession,
     handleDeleteDay,
+    handleDeleteSession,
+    handleDeleteSelectedSessions,
     handleExport,
+    handleExportFromModal,
+    sendToFavorite,
     
     // Helpers (re-export for JSX)
     formatDateRange,

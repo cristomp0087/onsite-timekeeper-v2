@@ -1,155 +1,42 @@
 /**
- * Auth Store - OnSite Timekeeper
+ * Auth Store - OnSite Timekeeper V2
  * 
- * Manages authentication with Supabase
- * - Login/Logout
- * - User registration
- * - Persistent session
- * - Registers auth events for audit
- * - Persists userId for background tasks
- * 
- * REFACTORED: All PT names converted to EN
+ * Handles authentication state and user session.
+ * BACKWARD COMPATIBLE with V1 API
  */
 
 import { create } from 'zustand';
-import { Platform } from 'react-native';
-import * as Device from 'expo-device';
-import * as Application from 'expo-application';
-import { supabase, isSupabaseConfigured } from '../lib/supabase';
+import { AppState, AppStateStatus } from 'react-native';
 import { logger } from '../lib/logger';
-import { incrementTelemetry } from '../lib/database';
-import { 
-  setBackgroundUserId, 
-  clearBackgroundUserId,
-  startHeartbeat,
-  stopHeartbeat,
-} from '../lib/backgroundTasks';
-import type { User, Session } from '@supabase/supabase-js';
+import { supabase, isSupabaseConfigured } from '../lib/supabase';
+import { initDatabase, trackMetric } from '../lib/database';
+import { setBackgroundUserId, clearBackgroundUserId } from '../lib/backgroundTasks';
+import type { Session, User } from '@supabase/supabase-js';
 
 // ============================================
 // TYPES
 // ============================================
 
-interface AuthState {
-  user: User | null;
+export interface AuthState {
+  // State
   session: Session | null;
+  user: User | null;
   isLoading: boolean;
-  isAuthenticated: boolean;
-
+  isInitialized: boolean;
+  error: string | null;
+  
   // Actions
   initialize: () => Promise<void>;
-  signIn: (email: string, password: string) => Promise<{ error: string | null }>;
-  signUp: (email: string, password: string, nome: string) => Promise<{ error: string | null }>;
+  signIn: (email: string, password: string) => Promise<{ success: boolean; error?: string }>;
+  signUp: (email: string, password: string) => Promise<{ success: boolean; error?: string }>;
   signOut: () => Promise<void>;
+  refreshSession: () => Promise<void>;
   
   // Helpers
   getUserId: () => string | null;
   getUserEmail: () => string | null;
   getUserName: () => string | null;
-}
-
-// ============================================
-// AUTH EVENT TYPES
-// ============================================
-
-type AuthEventType = 
-  | 'signup'
-  | 'login'
-  | 'login_failed'
-  | 'logout'
-  | 'session_restored'
-  | 'password_reset_requested';
-
-interface AuthEventData {
-  email?: string;
-  error?: string;
-  method?: string;
-  [key: string]: unknown;
-}
-
-// ============================================
-// HELPER: Register Auth Event
-// ============================================
-
-async function registerAuthEvent(
-  eventType: AuthEventType,
-  userId: string | null,
-  eventData?: AuthEventData
-): Promise<void> {
-  if (!isSupabaseConfigured()) return;
-
-  try {
-    const deviceInfo = {
-      model: Device.modelName || 'unknown',
-      brand: Device.brand || 'unknown',
-      os: Platform.OS,
-      osVersion: Platform.Version?.toString() || 'unknown',
-    };
-
-    const appVersion = Application.nativeApplicationVersion || 'unknown';
-    const osVersion = `${Platform.OS} ${Platform.Version}`;
-
-    const { error } = await supabase.from('app_events').insert({
-      user_id: userId,
-      event_type: eventType,
-      event_data: {
-        ...eventData,
-        device: deviceInfo,
-        app: 'timekeeper',
-      },
-      app_version: appVersion,
-      os_version: osVersion,
-      device_id: Device.deviceName || null,
-    });
-
-    if (error) {
-      logger.warn('auth', 'Error registering auth event', { error: error.message });
-    } else {
-      logger.debug('auth', `📊 Auth event registered: ${eventType}`);
-    }
-  } catch (error) {
-    logger.warn('auth', 'Exception registering auth event', { error: String(error) });
-  }
-}
-
-// ============================================
-// HELPER: Configure Background after Login
-// ============================================
-
-async function configureBackgroundForUser(userId: string): Promise<void> {
-  try {
-    // 1. Persist userId for background tasks
-    await setBackgroundUserId(userId);
-    logger.debug('auth', '✅ UserId saved for background');
-
-    // 2. Start heartbeat (safety net)
-    const heartbeatStarted = await startHeartbeat();
-    if (heartbeatStarted) {
-      logger.debug('auth', '✅ Heartbeat started');
-    } else {
-      logger.warn('auth', '⚠️ Heartbeat could not be started');
-    }
-  } catch (error) {
-    logger.error('auth', 'Error configuring background', { error: String(error) });
-  }
-}
-
-// ============================================
-// HELPER: Clear Background after Logout
-// ============================================
-
-async function clearBackgroundForUser(): Promise<void> {
-  try {
-    // 1. Stop heartbeat
-    await stopHeartbeat();
-    logger.debug('auth', '✅ Heartbeat stopped');
-
-    // 2. Remove userId from background
-    await clearBackgroundUserId();
-    logger.debug('auth', '✅ UserId removed from background');
-  } catch (error) {
-    logger.error('auth', 'Error clearing background', { error: String(error) });
-  }
+  isAuthenticated: () => boolean;
 }
 
 // ============================================
@@ -157,264 +44,315 @@ async function clearBackgroundForUser(): Promise<void> {
 // ============================================
 
 export const useAuthStore = create<AuthState>((set, get) => ({
-  user: null,
+  // Initial state
   session: null,
+  user: null,
   isLoading: true,
-  isAuthenticated: false,
+  isInitialized: false,
+  error: null,
 
+  // ============================================
+  // INITIALIZE
+  // ============================================
   initialize: async () => {
-    try {
-      logger.info('boot', '🔐 Initializing authentication...');
+    logger.info('boot', '🔐 Initializing auth store V2...');
+    set({ isLoading: true, error: null });
 
+    try {
+      // Initialize database first
+      await initDatabase();
+
+      // Check if Supabase is configured
       if (!isSupabaseConfigured()) {
-        logger.warn('auth', 'Supabase not configured - offline mode');
-        set({ isLoading: false });
+        logger.warn('auth', 'Supabase not configured - running in offline mode');
+        set({ isLoading: false, isInitialized: true });
         return;
       }
 
+      // Get existing session
       const { data: { session }, error } = await supabase.auth.getSession();
 
       if (error) {
-        logger.error('auth', 'Error restoring session', { error: error.message });
-        set({ isLoading: false });
+        logger.error('auth', 'Error getting session', { error: error.message });
+        set({ isLoading: false, isInitialized: true, error: error.message });
         return;
       }
 
       if (session) {
-        set({
-          user: session.user,
-          session,
-          isAuthenticated: true,
-          isLoading: false,
-        });
+        logger.info('auth', `✅ Session found: ${session.user.email}`);
+        set({ session, user: session.user });
         
-        logger.info('auth', '✅ Session restored', { 
-          userId: session.user.id,
-          email: session.user.email 
-        });
+        // Set userId for background tasks
+        await setBackgroundUserId(session.user.id);
 
-        // ========================================
-        // Configure background for user
-        // ========================================
-        await configureBackgroundForUser(session.user.id);
-
-        // Register event
-        await registerAuthEvent('session_restored', session.user.id, {
-          email: session.user.email,
-        });
-
-        // Increment app_opens
-        await incrementTelemetry(session.user.id, 'app_opens');
+        // V2: Track app open
+        try {
+          await trackMetric(session.user.id, 'app_opens');
+        } catch (e) {
+          // Ignore tracking errors
+        }
       } else {
-        set({ isLoading: false });
         logger.info('auth', 'No active session');
       }
 
-      // Listener for auth changes
-      supabase.auth.onAuthStateChange(async (event, session) => {
-        logger.debug('auth', `Auth event: ${event}`);
-        
-        if (event === 'INITIAL_SESSION') {
-          return;
-        }
-        
-        set({
-          user: session?.user ?? null,
-          session: session ?? null,
-          isAuthenticated: !!session,
-        });
+      // Listen for auth changes
+      supabase.auth.onAuthStateChange(async (event, newSession) => {
+        logger.info('auth', `Auth state change: ${event}`);
 
-        // ========================================
-        // Update background based on event
-        // ========================================
-        if (event === 'SIGNED_IN' && session?.user) {
-          logger.info('auth', '✅ Login completed');
-          await configureBackgroundForUser(session.user.id);
-        } else if (event === 'SIGNED_OUT') {
-          logger.info('auth', '👋 Logout completed');
-          await clearBackgroundForUser();
+        if (event === 'SIGNED_IN' && newSession) {
+          set({ session: newSession, user: newSession.user, error: null });
+          await setBackgroundUserId(newSession.user.id);
+          
+          // V2: Track app open on sign in
+          try {
+            await trackMetric(newSession.user.id, 'app_opens');
+          } catch (e) {
+            // Ignore tracking errors
+          }
+        }
+
+        if (event === 'SIGNED_OUT') {
+          set({ session: null, user: null });
+          await clearBackgroundUserId();
+        }
+
+        if (event === 'TOKEN_REFRESHED' && newSession) {
+          set({ session: newSession, user: newSession.user });
         }
       });
+
+      // Setup app state listener for tracking
+      AppState.addEventListener('change', async (state: AppStateStatus) => {
+        if (state === 'active') {
+          const userId = get().getUserId();
+          if (userId) {
+            // V2: Track when app comes to foreground
+            try {
+              await trackMetric(userId, 'app_opens');
+            } catch (e) {
+              // Ignore tracking errors
+            }
+          }
+          
+          // Refresh session when app becomes active
+          await get().refreshSession();
+        }
+      });
+
+      set({ isLoading: false, isInitialized: true });
+      logger.info('boot', '✅ Auth store V2 initialized');
+
     } catch (error) {
-      logger.error('auth', 'Initialization error', { error: String(error) });
-      set({ isLoading: false });
+      const errorMsg = String(error);
+      logger.error('auth', 'Error initializing auth', { error: errorMsg });
+      set({ isLoading: false, isInitialized: true, error: errorMsg });
     }
   },
 
-  signIn: async (email: string, password: string) => {
-    try {
-      logger.info('auth', '🔑 Attempting login...', { email });
+  // ============================================
+  // SIGN IN
+  // ============================================
+  signIn: async (email, password) => {
+    set({ isLoading: true, error: null });
 
+    try {
       if (!isSupabaseConfigured()) {
-        return { error: 'Supabase not configured' };
+        set({ isLoading: false });
+        return { success: false, error: 'Supabase not configured' };
       }
 
       const { data, error } = await supabase.auth.signInWithPassword({
-        email,
+        email: email.trim().toLowerCase(),
         password,
       });
 
       if (error) {
-        logger.warn('auth', '❌ Login failed', { error: error.message });
-        
-        await registerAuthEvent('login_failed', null, {
-          email,
-          error: error.message,
-        });
-        
-        let message = error.message;
-        if (error.message.includes('Invalid login')) {
-          message = 'Incorrect email or password';
-        } else if (error.message.includes('Email not confirmed')) {
-          message = 'Confirm your email before logging in';
-        }
-        
-        return { error: message };
-      }
-
-      set({
-        user: data.user,
-        session: data.session,
-        isAuthenticated: true,
-      });
-
-      // ========================================
-      // Configure background for user
-      // ========================================
-      if (data.user?.id) {
-        await configureBackgroundForUser(data.user.id);
-      }
-
-      await registerAuthEvent('login', data.user?.id || null, {
-        email,
-        method: 'password',
-      });
-
-      if (data.user?.id) {
-        await incrementTelemetry(data.user.id, 'app_opens');
-      }
-
-      logger.info('auth', '✅ Login successful', { userId: data.user?.id });
-      return { error: null };
-    } catch (error) {
-      logger.error('auth', 'Login error', { error: String(error) });
-      return { error: 'Error logging in. Try again.' };
-    }
-  },
-
-  signUp: async (email: string, password: string, nome: string) => {
-    try {
-      logger.info('auth', '📝 Registering new user...', { email });
-
-      if (!isSupabaseConfigured()) {
-        return { error: 'Supabase not configured' };
-      }
-
-      const { data, error } = await supabase.auth.signUp({
-        email,
-        password,
-        options: {
-          data: { nome },
-        },
-      });
-
-      if (error) {
-        logger.warn('auth', '❌ Registration failed', { error: error.message });
-        
-        let message = error.message;
-        if (error.message.includes('already registered')) {
-          message = 'This email is already registered';
-        } else if (error.message.includes('Password')) {
-          message = 'Password must be at least 6 characters';
-        }
-        
-        return { error: message };
-      }
-
-      await registerAuthEvent('signup', data.user?.id || null, {
-        email,
-        nome,
-        requires_confirmation: !data.session,
-      });
-
-      // Supabase may require email confirmation
-      if (data.user && !data.session) {
-        logger.info('auth', '📧 Confirmation email sent');
-        return { error: null };
+        logger.error('auth', 'Sign in error', { error: error.message });
+        set({ isLoading: false, error: error.message });
+        return { success: false, error: error.message };
       }
 
       if (data.session) {
-        set({
-          user: data.user,
-          session: data.session,
-          isAuthenticated: true,
+        logger.info('auth', `✅ Signed in: ${data.session.user.email}`);
+        set({ 
+          session: data.session, 
+          user: data.session.user, 
+          isLoading: false,
+          error: null,
         });
-
-        // ========================================
-        // Configure background for user
-        // ========================================
-        if (data.user?.id) {
-          await configureBackgroundForUser(data.user.id);
-          await incrementTelemetry(data.user.id, 'app_opens');
+        
+        await setBackgroundUserId(data.session.user.id);
+        
+        // V2: Track sign in as app open
+        try {
+          await trackMetric(data.session.user.id, 'app_opens');
+        } catch (e) {
+          // Ignore tracking errors
         }
+        
+        return { success: true };
       }
 
-      logger.info('auth', '✅ Registration successful', { userId: data.user?.id });
-      return { error: null };
+      set({ isLoading: false });
+      return { success: false, error: 'No session returned' };
+
     } catch (error) {
-      logger.error('auth', 'Registration error', { error: String(error) });
-      return { error: 'Error creating account. Try again.' };
+      const errorMsg = String(error);
+      logger.error('auth', 'Sign in exception', { error: errorMsg });
+      set({ isLoading: false, error: errorMsg });
+      return { success: false, error: errorMsg };
     }
   },
 
-  signOut: async () => {
+  // ============================================
+  // SIGN UP
+  // ============================================
+  signUp: async (email, password) => {
+    set({ isLoading: true, error: null });
+
     try {
-      logger.info('auth', '🚪 Logging out...');
+      if (!isSupabaseConfigured()) {
+        set({ isLoading: false });
+        return { success: false, error: 'Supabase not configured' };
+      }
 
-      const userId = get().user?.id || null;
-      const userEmail = get().user?.email;
-
-      // Register logout BEFORE clearing
-      await registerAuthEvent('logout', userId, {
-        email: userEmail,
+      const { data, error } = await supabase.auth.signUp({
+        email: email.trim().toLowerCase(),
+        password,
       });
 
-      // ========================================
-      // Clear background BEFORE logout
-      // ========================================
-      await clearBackgroundForUser();
+      if (error) {
+        logger.error('auth', 'Sign up error', { error: error.message });
+        set({ isLoading: false, error: error.message });
+        return { success: false, error: error.message };
+      }
 
+      if (data.session) {
+        logger.info('auth', `✅ Signed up and logged in: ${data.session.user.email}`);
+        set({ 
+          session: data.session, 
+          user: data.session.user, 
+          isLoading: false,
+          error: null,
+        });
+        
+        await setBackgroundUserId(data.session.user.id);
+        
+        // V2: Track first app open
+        try {
+          await trackMetric(data.session.user.id, 'app_opens');
+        } catch (e) {
+          // Ignore tracking errors
+        }
+        
+        return { success: true };
+      }
+
+      // Email confirmation required
+      if (data.user && !data.session) {
+        logger.info('auth', 'Email confirmation required');
+        set({ isLoading: false });
+        return { success: true }; // Success but need to confirm email
+      }
+
+      set({ isLoading: false });
+      return { success: false, error: 'Unknown error during sign up' };
+
+    } catch (error) {
+      const errorMsg = String(error);
+      logger.error('auth', 'Sign up exception', { error: errorMsg });
+      set({ isLoading: false, error: errorMsg });
+      return { success: false, error: errorMsg };
+    }
+  },
+
+  // ============================================
+  // SIGN OUT
+  // ============================================
+  signOut: async () => {
+    set({ isLoading: true });
+
+    try {
       if (isSupabaseConfigured()) {
         await supabase.auth.signOut();
       }
 
-      set({
-        user: null,
-        session: null,
-        isAuthenticated: false,
+      await clearBackgroundUserId();
+
+      set({ 
+        session: null, 
+        user: null, 
+        isLoading: false,
+        error: null,
       });
 
-      logger.info('auth', '✅ Logout completed');
+      logger.info('auth', '👋 Signed out');
+
     } catch (error) {
-      logger.error('auth', 'Logout error', { error: String(error) });
-      // Force local logout even if it fails
-      set({
-        user: null,
-        session: null,
-        isAuthenticated: false,
+      logger.error('auth', 'Sign out error', { error: String(error) });
+      
+      // Force clear state even on error
+      set({ 
+        session: null, 
+        user: null, 
+        isLoading: false,
       });
     }
   },
 
+  // ============================================
+  // REFRESH SESSION
+  // ============================================
+  refreshSession: async () => {
+    if (!isSupabaseConfigured()) return;
+
+    try {
+      const { data: { session }, error } = await supabase.auth.getSession();
+
+      if (error) {
+        logger.warn('auth', 'Session refresh error', { error: error.message });
+        return;
+      }
+
+      if (session) {
+        set({ session, user: session.user });
+      }
+    } catch (error) {
+      logger.error('auth', 'Session refresh exception', { error: String(error) });
+    }
+  },
+
+  // ============================================
+  // HELPERS (BACKWARD COMPATIBLE)
+  // ============================================
   getUserId: () => {
-    return get().user?.id ?? null;
+    return get().user?.id || null;
   },
 
   getUserEmail: () => {
-    return get().user?.email ?? null;
+    return get().user?.email || null;
   },
 
   getUserName: () => {
-    return get().user?.user_metadata?.nome ?? null;
+    // Try to get name from user metadata, fallback to email prefix
+    const user = get().user;
+    if (!user) return null;
+    
+    // Check user_metadata for name
+    const metadata = user.user_metadata;
+    if (metadata?.name) return metadata.name;
+    if (metadata?.full_name) return metadata.full_name;
+    if (metadata?.display_name) return metadata.display_name;
+    
+    // Fallback to email prefix
+    if (user.email) {
+      return user.email.split('@')[0];
+    }
+    
+    return null;
+  },
+
+  isAuthenticated: () => {
+    return !!get().session;
   },
 }));

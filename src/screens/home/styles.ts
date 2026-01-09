@@ -1,5 +1,7 @@
 /**
  * Home Screen Styles - OnSite Timekeeper
+ * 
+ * UPDATED: Added Day Detail Modal styles
  */
 
 import { StyleSheet, Dimensions, Platform, StatusBar } from 'react-native';
@@ -230,91 +232,229 @@ export const styles = StyleSheet.create({
     marginTop: 12,
   },
 
-  // DAY REPORT (expanded)
-  dayReportContainer: {
-    marginBottom: 8,
-  },
-  reportCard: {
-    backgroundColor: colors.backgroundTertiary,
-    borderRadius: 12,
-    padding: 12,
-  },
-  reportHeader: {
-    flexDirection: 'row',
-    justifyContent: 'space-between',
-    alignItems: 'center',
-    marginBottom: 8,
-    paddingBottom: 8,
-    borderBottomWidth: 1,
-    borderBottomColor: colors.border,
-  },
-  reportDate: {
-    fontSize: 14,
-    fontWeight: '600',
-    color: colors.text,
-  },
-  reportActions: {
-    flexDirection: 'row',
-    gap: 8,
-  },
-  actionBtnInline: {
-    padding: 4,
-  },
-  actionBtnInlineText: {
-    fontSize: 16,
-  },
-  reportSession: {
-    marginBottom: 8,
-    paddingBottom: 8,
-    borderBottomWidth: 1,
-    borderBottomColor: withOpacity(colors.border, 0.5),
-  },
-  reportLocal: {
-    fontSize: 14,
-    fontWeight: '500',
-    color: colors.text,
-    marginBottom: 2,
-  },
-  reportTimeGps: {
-    fontSize: 13,
-    color: colors.textSecondary,
-    marginBottom: 2,
-  },
-  reportTimeEdited: {
-    fontSize: 13,
-    color: colors.warning,
-    marginBottom: 2,
-  },
-  reportPausa: {
-    fontSize: 12,
-    color: colors.textTertiary,
-    marginBottom: 2,
-  },
-  reportSessionTotal: {
-    fontSize: 14,
-    fontWeight: '600',
-    color: colors.primary,
-  },
-  reportDayTotal: {
-    marginTop: 4,
-    paddingTop: 8,
-    borderTopWidth: 1,
-    borderTopColor: colors.border,
-  },
-  reportDayTotalText: {
-    fontSize: 15,
-    fontWeight: 'bold',
-    color: colors.primary,
-    textAlign: 'right',
-  },
-
   // EXPORT
   exportBtn: { backgroundColor: colors.primary, paddingVertical: 14, borderRadius: 10, alignItems: 'center', marginTop: 12 },
   exportBtnText: { color: colors.black, fontSize: 15, fontWeight: '600' },
   exportBtnSecondary: { backgroundColor: colors.backgroundSecondary, paddingVertical: 14, borderRadius: 10, alignItems: 'center', marginTop: 12, borderWidth: 1, borderColor: colors.primary },
   exportBtnSecondaryText: { color: colors.primary, fontSize: 15, fontWeight: '600' },
 
-  // MODAL (Manual Entry)
+  // ============================================
+  // DAY DETAIL MODAL (NEW!)
+  // ============================================
+  dayModalContent: {
+    backgroundColor: colors.backgroundSecondary,
+    borderTopLeftRadius: 24,
+    borderTopRightRadius: 24,
+    padding: 20,
+    paddingBottom: Platform.OS === 'ios' ? 34 : 20,
+    maxHeight: '85%',
+  },
+  dayModalHeader: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+    marginBottom: 16,
+  },
+  dayModalTitle: {
+    fontSize: 20,
+    fontWeight: 'bold',
+    color: colors.text,
+  },
+  dayModalHeaderActions: {
+    flexDirection: 'row',
+    gap: 8,
+  },
+  dayModalHeaderBtn: {
+    width: 36,
+    height: 36,
+    borderRadius: 18,
+    backgroundColor: colors.backgroundTertiary,
+    justifyContent: 'center',
+    alignItems: 'center',
+  },
+  dayModalHeaderBtnText: {
+    fontSize: 16,
+  },
+  
+  // Selection bar inside modal
+  dayModalSelectionBar: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+    backgroundColor: colors.backgroundTertiary,
+    paddingVertical: 8,
+    paddingHorizontal: 12,
+    borderRadius: 8,
+    marginBottom: 12,
+  },
+  dayModalSelectionText: {
+    fontSize: 13,
+    color: colors.textSecondary,
+  },
+  dayModalSelectionActions: {
+    flexDirection: 'row',
+    gap: 16,
+  },
+  dayModalSelectionBtn: {
+    fontSize: 13,
+    fontWeight: '600',
+    color: colors.primary,
+  },
+
+  // Sessions list
+  dayModalSessions: {
+    maxHeight: 350,
+  },
+  dayModalEmpty: {
+    alignItems: 'center',
+    paddingVertical: 40,
+  },
+  dayModalEmptyText: {
+    fontSize: 15,
+    color: colors.textSecondary,
+    marginBottom: 16,
+  },
+  dayModalAddBtn: {
+    backgroundColor: colors.primary,
+    paddingVertical: 12,
+    paddingHorizontal: 20,
+    borderRadius: 20,
+  },
+  dayModalAddBtnText: {
+    fontSize: 14,
+    fontWeight: '600',
+    color: colors.black,
+  },
+
+  // Session item
+  dayModalSession: {
+    flexDirection: 'row',
+    alignItems: 'flex-start',
+    padding: 12,
+    backgroundColor: colors.card,
+    borderRadius: 12,
+    marginBottom: 8,
+  },
+  dayModalSessionSelected: {
+    backgroundColor: withOpacity(colors.primary, 0.15),
+    borderWidth: 2,
+    borderColor: colors.primary,
+  },
+  dayModalCheckbox: {
+    width: 24,
+    height: 24,
+    borderRadius: 6,
+    borderWidth: 2,
+    borderColor: colors.border,
+    marginRight: 12,
+    marginTop: 2,
+    justifyContent: 'center',
+    alignItems: 'center',
+  },
+  dayModalCheckboxSelected: {
+    backgroundColor: colors.primary,
+    borderColor: colors.primary,
+  },
+  dayModalCheckmark: {
+    color: colors.black,
+    fontSize: 14,
+    fontWeight: 'bold',
+  },
+  dayModalSessionInfo: {
+    flex: 1,
+  },
+  dayModalSessionHeader: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    marginBottom: 4,
+  },
+  dayModalSessionLocation: {
+    fontSize: 15,
+    fontWeight: '600',
+    color: colors.text,
+  },
+  dayModalSessionDot: {
+    width: 10,
+    height: 10,
+    borderRadius: 5,
+  },
+  dayModalSessionTime: {
+    fontSize: 13,
+    color: colors.textSecondary,
+    marginBottom: 2,
+  },
+  dayModalSessionTimeEdited: {
+    color: colors.warning,
+  },
+  dayModalSessionPause: {
+    fontSize: 12,
+    color: colors.textTertiary,
+    marginBottom: 2,
+  },
+  dayModalSessionTotal: {
+    fontSize: 15,
+    fontWeight: '600',
+    color: colors.primary,
+    marginTop: 4,
+  },
+
+  // Total bar
+  dayModalTotalBar: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+    paddingVertical: 12,
+    paddingHorizontal: 4,
+    marginTop: 8,
+    borderTopWidth: 1,
+    borderTopColor: colors.border,
+  },
+  dayModalTotalLabel: {
+    fontSize: 15,
+    fontWeight: '500',
+    color: colors.textSecondary,
+  },
+  dayModalTotalValue: {
+    fontSize: 20,
+    fontWeight: 'bold',
+    color: colors.primary,
+  },
+
+  // Footer
+  dayModalFooter: {
+    flexDirection: 'row',
+    gap: 12,
+    marginTop: 16,
+  },
+  dayModalCancelBtn: {
+    flex: 1,
+    paddingVertical: 14,
+    borderRadius: 12,
+    backgroundColor: colors.backgroundTertiary,
+    alignItems: 'center',
+  },
+  dayModalCancelBtnText: {
+    fontSize: 15,
+    fontWeight: '600',
+    color: colors.textSecondary,
+  },
+  dayModalExportBtn: {
+    flex: 2,
+    paddingVertical: 14,
+    borderRadius: 12,
+    backgroundColor: colors.primary,
+    alignItems: 'center',
+  },
+  dayModalExportBtnText: {
+    fontSize: 15,
+    fontWeight: '600',
+    color: colors.black,
+  },
+
+  // ============================================
+  // MODAL (Manual Entry) - unchanged
+  // ============================================
   modalOverlay: { flex: 1, backgroundColor: withOpacity(colors.black, 0.7), justifyContent: 'flex-end' },
   modalContent: { backgroundColor: colors.backgroundSecondary, borderTopLeftRadius: 20, borderTopRightRadius: 20, padding: 20, paddingBottom: Platform.OS === 'ios' ? 34 : 20 },
   modalTitle: { fontSize: 18, fontWeight: 'bold', color: colors.text, textAlign: 'center' },
@@ -360,70 +500,8 @@ export const styles = StyleSheet.create({
   saveBtn: { flex: 1, paddingVertical: 14, borderRadius: 10, backgroundColor: colors.primary, alignItems: 'center' },
   saveBtnText: { fontSize: 15, color: colors.black, fontWeight: '600' },
 
-  // SESSION FINISHED MODAL
-  sessionModalOverlay: {
-    flex: 1,
-    backgroundColor: withOpacity(colors.black, 0.8),
-    justifyContent: 'center',
-    alignItems: 'center',
-    padding: 32,
-  },
-  sessionModalContent: {
-    backgroundColor: colors.card,
-    borderRadius: 24,
-    padding: 32,
-    alignItems: 'center',
-    width: '100%',
-    maxWidth: 320,
-  },
-  sessionModalEmoji: {
-    fontSize: 64,
-    marginBottom: 16,
-  },
-  sessionModalTitle: {
-    fontSize: 24,
-    fontWeight: 'bold',
-    color: colors.text,
-    marginBottom: 16,
-  },
-  sessionModalLocation: {
-    fontSize: 18,
-    color: colors.textSecondary,
-    marginBottom: 8,
-  },
-  sessionModalDuration: {
-    fontSize: 36,
-    fontWeight: 'bold',
-    color: colors.primary,
-    marginBottom: 24,
-  },
-  sessionModalActions: {
-    flexDirection: 'row',
-    gap: 12,
-    width: '100%',
-  },
-  sessionModalBtnSecondary: {
-    flex: 1,
-    paddingVertical: 14,
-    borderRadius: 12,
-    backgroundColor: colors.backgroundTertiary,
-    alignItems: 'center',
-  },
-  sessionModalBtnSecondaryText: {
-    fontSize: 16,
-    fontWeight: '600',
-    color: colors.text,
-  },
-  sessionModalBtnPrimary: {
-    flex: 1,
-    paddingVertical: 14,
-    borderRadius: 12,
-    backgroundColor: colors.primary,
-    alignItems: 'center',
-  },
-  sessionModalBtnPrimaryText: {
-    fontSize: 16,
-    fontWeight: '600',
-    color: colors.black,
-  },
+  // ============================================
+  // DEPRECATED: Session Finished Modal - REMOVED
+  // ============================================
+  // (styles kept for reference but no longer used)
 });

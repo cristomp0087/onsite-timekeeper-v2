@@ -4,13 +4,14 @@
  * Android-style accordion sections
  * - Profile with photo placeholder
  * - Timer configurations
+ * - Auto-Report (NEW) - Favorite contact + Reminder
  * - Notifications
  * - Sync
  * - About & Support
  * - Account (logout, delete)
  */
 
-import React, { useState } from 'react';
+import React, { useState, useEffect } from 'react';
 import {
   View,
   Text,
@@ -20,14 +21,16 @@ import {
   Alert,
   TouchableOpacity,
   Linking,
-  Image,
+  TextInput,
 } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
 import { useRouter } from 'expo-router';
 import { colors } from '../../src/constants/colors';
 import { useAuthStore } from '../../src/stores/authStore';
-import { useSettingsStore } from '../../src/stores/settingsStore';
+import { useSettingsStore, getDayShortLabel, formatReminderTime, getFrequencyLabel } from '../../src/stores/settingsStore';
+import type { FavoriteContact, ReportReminder } from '../../src/stores/settingsStore';
 import { useSyncStore } from '../../src/stores/syncStore';
+import { scheduleReportReminder, cancelReportReminder } from '../../src/lib/notifications';
 
 // ============================================
 // CONSTANTS
@@ -40,6 +43,16 @@ const TIMER_OPTIONS = {
   pauseLimit: [15, 30, 45, 60],        // minutes
   exitAdjustment: [5, 10, 15, 20],     // minutes
 };
+
+const DAYS_OF_WEEK = [
+  { value: 0, label: 'S', fullLabel: 'Sunday' },
+  { value: 1, label: 'M', fullLabel: 'Monday' },
+  { value: 2, label: 'T', fullLabel: 'Tuesday' },
+  { value: 3, label: 'W', fullLabel: 'Wednesday' },
+  { value: 4, label: 'T', fullLabel: 'Thursday' },
+  { value: 5, label: 'F', fullLabel: 'Friday' },
+  { value: 6, label: 'S', fullLabel: 'Saturday' },
+];
 
 const LINKS = {
   website: 'https://onsiteclub.ca',
@@ -201,6 +214,31 @@ export default function SettingsScreen() {
   const { syncNow, isSyncing, lastSyncAt, isOnline } = useSyncStore();
 
   // ============================================
+  // AUTO-REPORT LOCAL STATE
+  // ============================================
+  
+  const [contactType, setContactType] = useState<'whatsapp' | 'email'>(
+    settings.favoriteContact?.type || 'whatsapp'
+  );
+  const [contactValue, setContactValue] = useState(
+    settings.favoriteContact?.value || ''
+  );
+  const [contactName, setContactName] = useState(
+    settings.favoriteContact?.name || ''
+  );
+  const [hasUnsavedContact, setHasUnsavedContact] = useState(false);
+
+  // Track changes to contact fields
+  useEffect(() => {
+    const current = settings.favoriteContact;
+    const changed = 
+      contactType !== (current?.type || 'whatsapp') ||
+      contactValue !== (current?.value || '') ||
+      contactName !== (current?.name || '');
+    setHasUnsavedContact(changed && contactValue.length > 0);
+  }, [contactType, contactValue, contactName, settings.favoriteContact]);
+
+  // ============================================
   // HANDLERS
   // ============================================
 
@@ -241,7 +279,6 @@ export default function SettingsScreen() {
           text: 'Delete',
           style: 'destructive',
           onPress: () => {
-            // Second confirmation
             Alert.alert(
               '🚨 Final Confirmation',
               'Type DELETE to confirm account deletion.',
@@ -251,7 +288,6 @@ export default function SettingsScreen() {
                   text: 'I understand, delete',
                   style: 'destructive',
                   onPress: async () => {
-                    // TODO: Implement account deletion API call
                     Alert.alert('Account Deletion', 'Please contact support@onsiteclub.ca to delete your account.');
                   },
                 },
@@ -276,7 +312,6 @@ export default function SettingsScreen() {
   };
 
   const handlePickPhoto = () => {
-    // TODO: Implement photo picker
     Alert.alert('Coming Soon', 'Profile photo upload will be available soon!');
   };
 
@@ -293,6 +328,111 @@ export default function SettingsScreen() {
     if (minutes < 60) return `${minutes} min ago`;
     if (hours < 24) return `${hours} hour${hours > 1 ? 's' : ''} ago`;
     return `${days} day${days > 1 ? 's' : ''} ago`;
+  };
+
+  // ============================================
+  // AUTO-REPORT HANDLERS
+  // ============================================
+
+  const handleSaveContact = () => {
+    if (!contactValue.trim()) {
+      Alert.alert('Error', 'Please enter a contact');
+      return;
+    }
+
+    // Basic validation
+    if (contactType === 'whatsapp') {
+      const phone = contactValue.replace(/\D/g, '');
+      if (phone.length < 10) {
+        Alert.alert('Error', 'Please enter a valid phone number');
+        return;
+      }
+    } else {
+      if (!contactValue.includes('@') || !contactValue.includes('.')) {
+        Alert.alert('Error', 'Please enter a valid email address');
+        return;
+      }
+    }
+
+    const contact: FavoriteContact = {
+      type: contactType,
+      value: contactValue.trim(),
+      name: contactName.trim() || undefined,
+    };
+
+    settings.setFavoriteContact(contact);
+    setHasUnsavedContact(false);
+    Alert.alert('✅ Saved', 'Favorite contact saved successfully');
+  };
+
+  const handleClearContact = () => {
+    Alert.alert(
+      'Clear Contact',
+      'Remove favorite contact?',
+      [
+        { text: 'Cancel', style: 'cancel' },
+        {
+          text: 'Clear',
+          style: 'destructive',
+          onPress: () => {
+            settings.clearFavoriteContact();
+            setContactValue('');
+            setContactName('');
+            setHasUnsavedContact(false);
+          },
+        },
+      ]
+    );
+  };
+
+  const handleTestSend = async () => {
+    if (!contactValue.trim()) {
+      Alert.alert('Error', 'Please enter and save a contact first');
+      return;
+    }
+
+    const testMessage = '🧪 Test message from OnSite Timekeeper\n\nIf you receive this, your favorite contact is configured correctly!';
+
+    if (contactType === 'whatsapp') {
+      const phone = contactValue.replace(/\D/g, '');
+      const url = `whatsapp://send?phone=${phone}&text=${encodeURIComponent(testMessage)}`;
+      
+      const canOpen = await Linking.canOpenURL(url);
+      if (canOpen) {
+        await Linking.openURL(url);
+      } else {
+        Alert.alert('Error', 'WhatsApp is not installed');
+      }
+    } else {
+      const subject = encodeURIComponent('Test - OnSite Timekeeper');
+      const body = encodeURIComponent(testMessage);
+      const url = `mailto:${contactValue}?subject=${subject}&body=${body}`;
+      await Linking.openURL(url);
+    }
+  };
+
+  const handleToggleReminder = async (enabled: boolean) => {
+    settings.toggleReportReminder(enabled);
+    
+    if (enabled) {
+      await scheduleReportReminder(settings.reportReminder);
+      Alert.alert(
+        '🔔 Reminder Enabled',
+        `You'll be reminded ${getFrequencyLabel(settings.reportReminder.frequency).toLowerCase()} on ${getDayShortLabel(settings.reportReminder.dayOfWeek)} at ${formatReminderTime(settings.reportReminder.hour, settings.reportReminder.minute)}`
+      );
+    } else {
+      await cancelReportReminder();
+    }
+  };
+
+  const handleUpdateReminder = async (updates: Partial<ReportReminder>) => {
+    settings.updateReportReminder(updates);
+    
+    // Reschedule if enabled
+    if (settings.reportReminder.enabled) {
+      const updated = { ...settings.reportReminder, ...updates };
+      await scheduleReportReminder(updated);
+    }
   };
 
   // ============================================
@@ -381,6 +521,189 @@ export default function SettingsScreen() {
       </AccordionSection>
 
       {/* ============================================ */}
+      {/* AUTO-REPORT SECTION (NEW) */}
+      {/* ============================================ */}
+      <AccordionSection title="Auto-Report" icon="send-outline">
+        {/* Favorite Contact */}
+        <Text style={styles.sectionSubtitle}>Favorite Contact</Text>
+        <Text style={styles.settingHint}>
+          Quick send reports to this contact
+        </Text>
+
+        {/* Type selector */}
+        <View style={styles.typeSelector}>
+          <TouchableOpacity
+            style={[styles.typeBtn, contactType === 'whatsapp' && styles.typeBtnActive]}
+            onPress={() => setContactType('whatsapp')}
+          >
+            <Text style={[styles.typeBtnText, contactType === 'whatsapp' && styles.typeBtnTextActive]}>
+              📱 WhatsApp
+            </Text>
+          </TouchableOpacity>
+          <TouchableOpacity
+            style={[styles.typeBtn, contactType === 'email' && styles.typeBtnActive]}
+            onPress={() => setContactType('email')}
+          >
+            <Text style={[styles.typeBtnText, contactType === 'email' && styles.typeBtnTextActive]}>
+              📧 Email
+            </Text>
+          </TouchableOpacity>
+        </View>
+
+        {/* Contact input */}
+        <TextInput
+          style={styles.contactInput}
+          placeholder={contactType === 'whatsapp' ? '+1 555 123 4567' : 'email@company.com'}
+          placeholderTextColor={colors.textTertiary}
+          value={contactValue}
+          onChangeText={setContactValue}
+          keyboardType={contactType === 'whatsapp' ? 'phone-pad' : 'email-address'}
+          autoCapitalize="none"
+          autoCorrect={false}
+        />
+
+        {/* Name input */}
+        <TextInput
+          style={styles.contactInput}
+          placeholder="Name (optional, e.g. Supervisor)"
+          placeholderTextColor={colors.textTertiary}
+          value={contactName}
+          onChangeText={setContactName}
+          autoCapitalize="words"
+        />
+
+        {/* Action buttons */}
+        <View style={styles.contactActions}>
+          {settings.favoriteContact && (
+            <TouchableOpacity style={styles.clearBtn} onPress={handleClearContact}>
+              <Ionicons name="trash-outline" size={18} color={colors.error} />
+            </TouchableOpacity>
+          )}
+          <TouchableOpacity 
+            style={[styles.testBtn, !contactValue && styles.btnDisabled]} 
+            onPress={handleTestSend}
+            disabled={!contactValue}
+          >
+            <Text style={styles.testBtnText}>🧪 Test</Text>
+          </TouchableOpacity>
+          <TouchableOpacity 
+            style={[styles.saveContactBtn, !hasUnsavedContact && styles.btnDisabled]} 
+            onPress={handleSaveContact}
+            disabled={!hasUnsavedContact}
+          >
+            <Text style={styles.saveContactBtnText}>💾 Save</Text>
+          </TouchableOpacity>
+        </View>
+
+        {settings.favoriteContact && (
+          <View style={styles.savedContactBadge}>
+            <Ionicons name="checkmark-circle" size={16} color={colors.success} />
+            <Text style={styles.savedContactText}>
+              Saved: {settings.favoriteContact.name || settings.favoriteContact.value}
+            </Text>
+          </View>
+        )}
+
+        <View style={styles.divider} />
+
+        {/* Report Reminder */}
+        <ToggleRow
+          label="Report Reminder"
+          value={settings.reportReminder.enabled}
+          onChange={handleToggleReminder}
+          description="Get notified when your report is ready"
+        />
+
+        {settings.reportReminder.enabled && (
+          <>
+            {/* Frequency */}
+            <Text style={styles.settingLabel}>Frequency</Text>
+            <View style={styles.frequencyOptions}>
+              {(['weekly', 'biweekly', 'monthly'] as const).map(freq => (
+                <TouchableOpacity
+                  key={freq}
+                  style={[
+                    styles.freqBtn,
+                    settings.reportReminder.frequency === freq && styles.freqBtnActive
+                  ]}
+                  onPress={() => handleUpdateReminder({ frequency: freq })}
+                >
+                  <Text style={[
+                    styles.freqBtnText,
+                    settings.reportReminder.frequency === freq && styles.freqBtnTextActive
+                  ]}>
+                    {getFrequencyLabel(freq)}
+                  </Text>
+                </TouchableOpacity>
+              ))}
+            </View>
+
+            {/* Day of week (only for weekly/biweekly) */}
+            {settings.reportReminder.frequency !== 'monthly' && (
+              <>
+                <Text style={styles.settingLabel}>Day</Text>
+                <View style={styles.daySelector}>
+                  {DAYS_OF_WEEK.map((day) => (
+                    <TouchableOpacity
+                      key={day.value}
+                      style={[
+                        styles.dayBtn,
+                        settings.reportReminder.dayOfWeek === day.value && styles.dayBtnActive
+                      ]}
+                      onPress={() => handleUpdateReminder({ dayOfWeek: day.value })}
+                    >
+                      <Text style={[
+                        styles.dayBtnText,
+                        settings.reportReminder.dayOfWeek === day.value && styles.dayBtnTextActive
+                      ]}>
+                        {day.label}
+                      </Text>
+                    </TouchableOpacity>
+                  ))}
+                </View>
+              </>
+            )}
+
+            {/* Time */}
+            <Text style={styles.settingLabel}>Time</Text>
+            <View style={styles.timeSelector}>
+              <TextInput
+                style={styles.timeInput}
+                value={settings.reportReminder.hour.toString().padStart(2, '0')}
+                onChangeText={(t) => {
+                  const num = parseInt(t.replace(/\D/g, ''), 10);
+                  if (!isNaN(num) && num >= 0 && num <= 23) {
+                    handleUpdateReminder({ hour: num });
+                  }
+                }}
+                keyboardType="number-pad"
+                maxLength={2}
+                selectTextOnFocus
+              />
+              <Text style={styles.timeSeparator}>:</Text>
+              <TextInput
+                style={styles.timeInput}
+                value={settings.reportReminder.minute.toString().padStart(2, '0')}
+                onChangeText={(t) => {
+                  const num = parseInt(t.replace(/\D/g, ''), 10);
+                  if (!isNaN(num) && num >= 0 && num <= 59) {
+                    handleUpdateReminder({ minute: num });
+                  }
+                }}
+                keyboardType="number-pad"
+                maxLength={2}
+                selectTextOnFocus
+              />
+            </View>
+
+            <Text style={styles.reminderSummary}>
+              💡 Next reminder: {getDayShortLabel(settings.reportReminder.dayOfWeek)} at {formatReminderTime(settings.reportReminder.hour, settings.reportReminder.minute)}
+            </Text>
+          </>
+        )}
+      </AccordionSection>
+
+      {/* ============================================ */}
       {/* NOTIFICATIONS SECTION */}
       {/* ============================================ */}
       <AccordionSection title="Notifications" icon="notifications-outline">
@@ -440,7 +763,7 @@ export default function SettingsScreen() {
       {/* ============================================ */}
       <AccordionSection title="About" icon="information-circle-outline">
         <InfoRow label="Version" value="1.0.0" />
-        <InfoRow label="Build" value="2024.01" />
+        <InfoRow label="Build" value="2025.01" />
         
         <View style={styles.divider} />
 
@@ -532,7 +855,7 @@ export default function SettingsScreen() {
       {/* ============================================ */}
       <View style={styles.footer}>
         <Text style={styles.footerText}>OnSite Timekeeper</Text>
-        <Text style={styles.footerText}>© 2024 OnSite Club</Text>
+        <Text style={styles.footerText}>© 2025 OnSite Club</Text>
         <Text style={styles.footerText}>Made with ❤️ in Canada</Text>
       </View>
 
@@ -655,6 +978,14 @@ const styles = StyleSheet.create({
     marginBottom: 4,
   },
 
+  // Section subtitle
+  sectionSubtitle: {
+    fontSize: 14,
+    fontWeight: '600',
+    color: colors.primary,
+    marginBottom: 4,
+  },
+
   // Options row (for timer selections)
   optionsRow: {
     flexDirection: 'row',
@@ -714,6 +1045,200 @@ const styles = StyleSheet.create({
     color: colors.error,
   },
 
+  // Divider
+  divider: {
+    height: 1,
+    backgroundColor: colors.border,
+    marginVertical: 12,
+  },
+
+  // ============================================
+  // AUTO-REPORT STYLES (NEW)
+  // ============================================
+
+  typeSelector: {
+    flexDirection: 'row',
+    gap: 8,
+    marginVertical: 12,
+  },
+  typeBtn: {
+    flex: 1,
+    paddingVertical: 10,
+    borderRadius: 8,
+    backgroundColor: colors.backgroundSecondary,
+    borderWidth: 1,
+    borderColor: colors.border,
+    alignItems: 'center',
+  },
+  typeBtnActive: {
+    backgroundColor: colors.primary,
+    borderColor: colors.primary,
+  },
+  typeBtnText: {
+    fontSize: 14,
+    fontWeight: '500',
+    color: colors.text,
+  },
+  typeBtnTextActive: {
+    color: colors.black,
+  },
+
+  contactInput: {
+    backgroundColor: colors.backgroundSecondary,
+    borderWidth: 1,
+    borderColor: colors.border,
+    borderRadius: 8,
+    paddingHorizontal: 12,
+    paddingVertical: 10,
+    fontSize: 15,
+    color: colors.text,
+    marginBottom: 8,
+  },
+
+  contactActions: {
+    flexDirection: 'row',
+    gap: 8,
+    marginTop: 4,
+  },
+  clearBtn: {
+    paddingVertical: 10,
+    paddingHorizontal: 12,
+    borderRadius: 8,
+    backgroundColor: colors.backgroundSecondary,
+    borderWidth: 1,
+    borderColor: colors.error,
+  },
+  testBtn: {
+    flex: 1,
+    paddingVertical: 10,
+    borderRadius: 8,
+    backgroundColor: colors.backgroundSecondary,
+    borderWidth: 1,
+    borderColor: colors.border,
+    alignItems: 'center',
+  },
+  testBtnText: {
+    fontSize: 14,
+    fontWeight: '500',
+    color: colors.text,
+  },
+  saveContactBtn: {
+    flex: 1,
+    paddingVertical: 10,
+    borderRadius: 8,
+    backgroundColor: colors.primary,
+    alignItems: 'center',
+  },
+  saveContactBtnText: {
+    fontSize: 14,
+    fontWeight: '600',
+    color: colors.black,
+  },
+  btnDisabled: {
+    opacity: 0.5,
+  },
+
+  savedContactBadge: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 6,
+    marginTop: 8,
+    paddingVertical: 6,
+    paddingHorizontal: 10,
+    backgroundColor: colors.success + '20',
+    borderRadius: 6,
+  },
+  savedContactText: {
+    fontSize: 13,
+    color: colors.success,
+  },
+
+  frequencyOptions: {
+    flexDirection: 'row',
+    gap: 8,
+    marginBottom: 12,
+  },
+  freqBtn: {
+    flex: 1,
+    paddingVertical: 8,
+    borderRadius: 8,
+    backgroundColor: colors.backgroundSecondary,
+    borderWidth: 1,
+    borderColor: colors.border,
+    alignItems: 'center',
+  },
+  freqBtnActive: {
+    backgroundColor: colors.primary,
+    borderColor: colors.primary,
+  },
+  freqBtnText: {
+    fontSize: 12,
+    fontWeight: '500',
+    color: colors.text,
+  },
+  freqBtnTextActive: {
+    color: colors.black,
+  },
+
+  daySelector: {
+    flexDirection: 'row',
+    gap: 6,
+    marginBottom: 12,
+  },
+  dayBtn: {
+    width: 36,
+    height: 36,
+    borderRadius: 18,
+    backgroundColor: colors.backgroundSecondary,
+    borderWidth: 1,
+    borderColor: colors.border,
+    justifyContent: 'center',
+    alignItems: 'center',
+  },
+  dayBtnActive: {
+    backgroundColor: colors.primary,
+    borderColor: colors.primary,
+  },
+  dayBtnText: {
+    fontSize: 13,
+    fontWeight: '600',
+    color: colors.text,
+  },
+  dayBtnTextActive: {
+    color: colors.black,
+  },
+
+  timeSelector: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    marginBottom: 12,
+  },
+  timeInput: {
+    width: 50,
+    paddingVertical: 8,
+    paddingHorizontal: 12,
+    backgroundColor: colors.backgroundSecondary,
+    borderWidth: 1,
+    borderColor: colors.border,
+    borderRadius: 8,
+    fontSize: 18,
+    fontWeight: '600',
+    color: colors.text,
+    textAlign: 'center',
+  },
+  timeSeparator: {
+    fontSize: 20,
+    fontWeight: 'bold',
+    color: colors.text,
+    marginHorizontal: 6,
+  },
+
+  reminderSummary: {
+    fontSize: 13,
+    color: colors.textSecondary,
+    fontStyle: 'italic',
+  },
+
   // Sync
   syncMessage: {
     fontSize: 13,
@@ -738,13 +1263,6 @@ const styles = StyleSheet.create({
     fontSize: 15,
     fontWeight: '600',
     color: colors.white,
-  },
-
-  // Divider
-  divider: {
-    height: 1,
-    backgroundColor: colors.border,
-    marginVertical: 8,
   },
 
   // Legal note

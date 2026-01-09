@@ -1,17 +1,10 @@
 /**
- * Background Tasks - OnSite Timekeeper
+ * Background Tasks - OnSite Timekeeper V2
  * 
  * Tasks that run in background:
  * - GEOFENCE_TASK: Detects entry/exit (real time, via OS)
  * - LOCATION_TASK: Position updates
  * - HEARTBEAT_TASK: Checks every 15 min if still in fence (safety net)
- * 
- * IMPORTANT: 
- * - Import in entry point BEFORE using
- * - Tasks process DIRECTLY to database, without depending on callbacks
- *   (callbacks are optional, to update UI when app is active)
- * 
- * REFACTORED: All PT names removed, English only
  */
 
 import * as TaskManager from 'expo-task-manager';
@@ -22,7 +15,7 @@ import { logger } from './logger';
 import { LOCATION_TASK_NAME, GEOFENCE_TASK_NAME } from './location';
 
 // ============================================
-// DATABASE IMPORTS (direct processing)
+// DATABASE IMPORTS (V2)
 // ============================================
 
 import {
@@ -30,8 +23,12 @@ import {
   createEntryRecord,
   registerExit,
   getLocations,
-  registerGeopoint,
-  registerHeartbeat,
+  // V2: New imports
+  trackMetric,
+  trackGeofenceTrigger,
+  recordEntryAudit,
+  recordExitAudit,
+  captureGeofenceError,
 } from './database';
 
 // ============================================
@@ -185,17 +182,11 @@ async function getBackgroundUserId(): Promise<string | null> {
 // SKIPPED TODAY PERSISTENCE
 // ============================================
 
-/**
- * Structure of persisted skippedToday
- */
 interface SkippedTodayData {
-  date: string; // YYYY-MM-DD
+  date: string;
   locationIds: string[];
 }
 
-/**
- * Retrieve list of locations ignored today
- */
 async function getSkippedToday(): Promise<string[]> {
   try {
     const data = await AsyncStorage.getItem(SKIPPED_TODAY_KEY);
@@ -204,7 +195,6 @@ async function getSkippedToday(): Promise<string[]> {
     const parsed: SkippedTodayData = JSON.parse(data);
     const today = new Date().toISOString().split('T')[0];
     
-    // If from another day, return empty (automatic reset)
     if (parsed.date !== today) {
       return [];
     }
@@ -216,9 +206,6 @@ async function getSkippedToday(): Promise<string[]> {
   }
 }
 
-/**
- * Add location to ignored today list
- */
 export async function addToSkippedToday(locationId: string): Promise<void> {
   try {
     const current = await getSkippedToday();
@@ -237,9 +224,6 @@ export async function addToSkippedToday(locationId: string): Promise<void> {
   }
 }
 
-/**
- * Remove location from ignored list (when exiting fence)
- */
 export async function removeFromSkippedToday(locationId: string): Promise<void> {
   try {
     const current = await getSkippedToday();
@@ -258,9 +242,6 @@ export async function removeFromSkippedToday(locationId: string): Promise<void> 
   }
 }
 
-/**
- * Clear entire ignored list
- */
 export async function clearSkippedToday(): Promise<void> {
   try {
     await AsyncStorage.removeItem(SKIPPED_TODAY_KEY);
@@ -270,25 +251,22 @@ export async function clearSkippedToday(): Promise<void> {
   }
 }
 
-/**
- * Check if location is in ignored today list
- */
 async function isLocationSkippedToday(locationId: string): Promise<boolean> {
   const skipped = await getSkippedToday();
   return skipped.includes(locationId);
 }
 
 // ============================================
-// HELPER: Calculate distance (Haversine)
+// HELPER: Check if inside any fence
 // ============================================
 
 function calculateDistance(
-  lat1: number, 
-  lon1: number, 
-  lat2: number, 
+  lat1: number,
+  lon1: number,
+  lat2: number,
   lon2: number
 ): number {
-  const R = 6371e3; // Earth radius in meters
+  const R = 6371e3;
   const φ1 = (lat1 * Math.PI) / 180;
   const φ2 = (lat2 * Math.PI) / 180;
   const Δφ = ((lat2 - lat1) * Math.PI) / 180;
@@ -299,244 +277,147 @@ function calculateDistance(
     Math.cos(φ1) * Math.cos(φ2) * Math.sin(Δλ / 2) * Math.sin(Δλ / 2);
   const c = 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
 
-  return R * c; // Distance in meters
+  return R * c;
 }
 
-/**
- * Fetch fences from database (when cache is empty)
- */
-async function getFencesFromDb(userId: string): Promise<ActiveFence[]> {
-  try {
-    const locations = await getLocations(userId);
-    return locations.map(l => ({
-      id: l.id,
-      name: l.name,
-      latitude: l.latitude,
-      longitude: l.longitude,
-      radius: l.radius,
-    }));
-  } catch (error) {
-    logger.error('geofence', 'Error fetching fences from database', { error: String(error) });
-    return [];
-  }
-}
-
-/**
- * Check which fence the point is inside
- */
 async function checkInsideFence(
-  latitude: number, 
+  latitude: number,
   longitude: number,
   userId: string,
   useHysteresis: boolean = false
 ): Promise<{ isInside: boolean; fence: ActiveFence | null }> {
-  // Use cache if available, otherwise fetch from database
+  // Try cache first
   let fences = activeFencesCache;
+  
+  // If cache empty, load from DB
   if (fences.length === 0) {
-    fences = await getFencesFromDb(userId);
+    try {
+      const locations = await getLocations(userId);
+      fences = locations
+        .filter(l => l.status === 'active')
+        .map(l => ({
+          id: l.id,
+          name: l.name,
+          latitude: l.latitude,
+          longitude: l.longitude,
+          radius: l.radius,
+        }));
+      activeFencesCache = fences;
+    } catch (error) {
+      logger.error('heartbeat', 'Error loading fences', { error: String(error) });
+      return { isInside: false, fence: null };
+    }
   }
 
+  // Check each fence
   for (const fence of fences) {
-    const distance = calculateDistance(
-      latitude, 
-      longitude, 
-      fence.latitude, 
-      fence.longitude
-    );
-    
-    const hysteresisFactor = useHysteresis ? HYSTERESIS_EXIT : HYSTERESIS_ENTRY;
-    const effectiveRadius = fence.radius * hysteresisFactor;
+    const distance = calculateDistance(latitude, longitude, fence.latitude, fence.longitude);
+    const effectiveRadius = useHysteresis ? fence.radius * HYSTERESIS_EXIT : fence.radius;
     
     if (distance <= effectiveRadius) {
       return { isInside: true, fence };
     }
   }
+
   return { isInside: false, fence: null };
 }
 
-/**
- * Find fence by ID
- */
-async function getFenceById(fenceId: string, userId: string): Promise<ActiveFence | null> {
-  let fences = activeFencesCache;
-  if (fences.length === 0) {
-    fences = await getFencesFromDb(userId);
-  }
-  return fences.find(f => f.id === fenceId) || null;
-}
-
 // ============================================
-// TASK: GEOFENCING (Native) - PROCESSES DIRECTLY
+// GEOFENCE TASK
 // ============================================
 
 TaskManager.defineTask(GEOFENCE_TASK_NAME, async ({ data, error }) => {
-  const startTime = Date.now();
-  logger.info('geofence', '🎯 Geofence task executing...');
-
   if (error) {
-    logger.error('geofence', 'Error in geofence task', { error: error.message });
+    logger.error('geofence', 'Geofence task error', { error: String(error) });
     return;
   }
 
-  if (!data) {
-    logger.warn('geofence', 'Task executed without data');
+  const eventData = data as { eventType: Location.GeofencingEventType; region: Location.LocationRegion };
+  
+  if (!eventData || !eventData.region) {
+    logger.warn('geofence', 'Invalid geofence event data');
     return;
   }
 
-  const { eventType, region } = data as {
-    eventType: Location.GeofencingEventType;
-    region: Location.LocationRegion;
+  const { eventType, region } = eventData;
+  const eventTypeStr = eventType === Location.GeofencingEventType.Enter ? 'enter' : 'exit';
+
+  // Handle undefined identifier
+  const regionId = region.identifier || 'unknown';
+
+  logger.info('geofence', `📍 Native geofence: ${eventTypeStr} - ${regionId}`);
+
+  const event: GeofenceEvent = {
+    type: eventTypeStr,
+    regionIdentifier: regionId,
+    timestamp: Date.now(),
   };
 
-  const isEnter = eventType === Location.GeofencingEventType.Enter;
-  const fenceId = region.identifier || 'unknown';
-
-  logger.info('geofence', `📍 Event: ${isEnter ? 'ENTRY' : 'EXIT'} - ${fenceId}`);
-
-  // ============================================
-  // DIRECT PROCESSING (without depending on callback)
-  // ============================================
-
-  try {
-    const userId = await getBackgroundUserId();
-    
-    if (!userId) {
-      logger.warn('geofence', '⚠️ UserId not found - user not logged in?');
-      return;
+  // Track geofence trigger
+  const userId = await getBackgroundUserId();
+  if (userId) {
+    try {
+      await trackGeofenceTrigger(userId, null);
+    } catch (e) {
+      // Ignore tracking errors
     }
+  }
 
-    const fence = await getFenceById(fenceId, userId);
-    
-    if (!fence) {
-      logger.warn('geofence', `⚠️ Fence not found: ${fenceId}`);
-      return;
-    }
-
-    if (isEnter) {
-      // ========== ENTRY ==========
-      // Check if location was ignored today
-      if (await isLocationSkippedToday(fenceId)) {
-        logger.info('geofence', `😴 Location "${fence.name}" ignored today, skipping entry`);
-        return;
-      }
-      
-      // Check if already has active session for this fence
-      const activeSession = await getGlobalActiveSession(userId);
-      
-      if (activeSession && activeSession.location_id === fenceId) {
-        logger.info('geofence', '📍 Already has active session for this fence, ignoring');
-      } else if (activeSession) {
-        logger.warn('geofence', `⚠️ Already has active session at another location: ${activeSession.location_name}`);
-        // Could close the previous and open new, but for safety only log
-      } else {
-        // Register entry
-        logger.info('geofence', `✅ Registering ENTRY at "${fence.name}"`);
-        await createEntryRecord({
-          userId,
-          locationId: fence.id,
-          locationName: fence.name,
-          type: 'automatic',
-        });
-      }
-    } else {
-      // ========== EXIT ==========
-      // Remove from skippedToday when exiting (allows new entry next time)
-      await removeFromSkippedToday(fenceId);
-      
-      const activeSession = await getGlobalActiveSession(userId);
-      
-      if (activeSession && activeSession.location_id === fenceId) {
-        logger.info('geofence', `✅ Registering EXIT from "${fence.name}"`);
-        await registerExit(userId, fenceId);
-      } else if (activeSession) {
-        logger.warn('geofence', `⚠️ Exit from fence different from active session`);
-      } else {
-        logger.debug('geofence', 'No active session to close');
-      }
-    }
-
-    // ============================================
-    // OPTIONAL CALLBACK (to update UI)
-    // ============================================
-    if (onGeofenceEvent) {
-      const event: GeofenceEvent = {
-        type: isEnter ? 'enter' : 'exit',
-        regionIdentifier: fenceId,
-        timestamp: Date.now(),
-      };
+  // Notify callback if registered
+  if (onGeofenceEvent) {
+    try {
       onGeofenceEvent(event);
+    } catch (e) {
+      logger.error('geofence', 'Error in geofence callback', { error: String(e) });
     }
-
-    const duration = Date.now() - startTime;
-    logger.info('geofence', `✅ Geofence task completed in ${duration}ms`);
-
-  } catch (error) {
-    logger.error('geofence', 'Error processing geofence', { error: String(error) });
   }
 });
 
 // ============================================
-// TASK: LOCATION (Background updates)
+// LOCATION TASK
 // ============================================
 
 TaskManager.defineTask(LOCATION_TASK_NAME, async ({ data, error }) => {
   if (error) {
-    logger.error('gps', 'Error in location task', { error: error.message });
+    logger.error('gps', 'Location task error', { error: String(error) });
     return;
   }
 
-  if (!data) return;
-
-  const { locations } = data as { locations: Location.LocationObject[] };
-  const location = locations[0];
-
-  if (!location) return;
-
-  logger.debug('gps', `📍 Background location: ${location.coords.latitude.toFixed(6)}, ${location.coords.longitude.toFixed(6)}`);
-
-  // ============================================
-  // OPTIONAL CALLBACK (to update UI)
-  // ============================================
-  if (onLocationUpdate) {
-    onLocationUpdate(location);
+  const locationData = data as { locations: Location.LocationObject[] };
+  
+  if (!locationData || !locationData.locations || locationData.locations.length === 0) {
+    return;
   }
 
-  // Register geopoint
-  try {
-    const userId = await getBackgroundUserId();
-    if (userId) {
-      const activeSession = await getGlobalActiveSession(userId);
-      
-      await registerGeopoint(
-        userId,
-        location.coords.latitude,
-        location.coords.longitude,
-        location.coords.accuracy ?? null,
-        'background',
-        false, // insideFence will be determined later
-        null,
-        null,
-        activeSession?.id || null
-      );
+  const location = locationData.locations[0];
+  
+  logger.debug('gps', 'Background location update', {
+    lat: location.coords.latitude.toFixed(6),
+    lng: location.coords.longitude.toFixed(6),
+  });
+
+  // Notify callback if registered
+  if (onLocationUpdate) {
+    try {
+      onLocationUpdate(location);
+    } catch (e) {
+      logger.error('gps', 'Error in location callback', { error: String(e) });
     }
-  } catch (error) {
-    logger.error('gps', 'Error registering geopoint', { error: String(error) });
   }
 });
 
 // ============================================
-// TASK: HEARTBEAT (Safety net)
+// HEARTBEAT TASK
 // ============================================
 
 TaskManager.defineTask(HEARTBEAT_TASK_NAME, async () => {
   const startTime = Date.now();
-  logger.info('heartbeat', '💓 Heartbeat task executing...');
+  logger.info('heartbeat', '💓 Heartbeat started...');
 
   try {
     const userId = await getBackgroundUserId();
-    
     if (!userId) {
-      logger.warn('heartbeat', '⚠️ UserId not found - skipping heartbeat');
+      logger.warn('heartbeat', 'No userId found');
       return BackgroundFetch.BackgroundFetchResult.NoData;
     }
 
@@ -546,86 +427,82 @@ TaskManager.defineTask(HEARTBEAT_TASK_NAME, async () => {
     });
 
     const { latitude, longitude, accuracy } = location.coords;
-    logger.info('heartbeat', `📍 Location: ${latitude.toFixed(6)}, ${longitude.toFixed(6)}`);
 
     // Check if inside any fence
     const { isInside, fence } = await checkInsideFence(latitude, longitude, userId, true);
 
-    // Get active session
+    // Get current session
     const activeSession = await getGlobalActiveSession(userId);
 
-    // Register heartbeat in database
-    await registerHeartbeat(
-      userId,
-      latitude,
-      longitude,
-      accuracy ?? null,
-      isInside,
-      fence?.id ?? null,
-      fence?.name ?? null,
-      activeSession?.id ?? null,
-      null // batteryLevel
-    );
+    // V2: Only track metric, don't log GPS
+    try {
+      await trackMetric(userId, 'geofence_triggers');
+    } catch (e) {
+      // Ignore tracking errors
+    }
 
     // ============================================
-    // INCONSISTENCY DETECTION
+    // CONSISTENCY CHECKS
     // ============================================
 
-    // Case 1: INSIDE fence but WITHOUT active session
-    // → Missed entry! Register now.
+    // Case 1: INSIDE fence but NO active session → missed entry!
     if (isInside && fence && !activeSession) {
-      // Check if location was ignored today
+      // Check if location was skipped today
       if (await isLocationSkippedToday(fence.id)) {
-        logger.info('heartbeat', `😴 Location "${fence.name}" ignored today`);
+        logger.info('heartbeat', `😴 Location "${fence.name}" skipped today`);
       } else {
-        logger.warn('heartbeat', `⚠️ MISSED ENTRY detected! Registering entry at "${fence.name}"`);
+        logger.warn('heartbeat', `⚠️ MISSED ENTRY detected: ${fence.name}`);
         
-        await createEntryRecord({
+        // Create entry record
+        const sessionId = await createEntryRecord({
           userId,
           locationId: fence.id,
           locationName: fence.name,
           type: 'automatic',
         });
 
-        // Register geopoint marking the detection
-        await registerGeopoint(
+        // V2: Record audit for entry (GPS proof)
+        try {
+          await recordEntryAudit(
+            userId,
+            latitude,
+            longitude,
+            accuracy ?? null,
+            fence.id,
+            fence.name,
+            sessionId
+          );
+        } catch (e) {
+          // Ignore audit errors
+        }
+      }
+    }
+
+    // Case 2: OUTSIDE all fences but WITH active session → missed exit!
+    if (!isInside && activeSession) {
+      logger.warn('heartbeat', `⚠️ MISSED EXIT detected: ${activeSession.location_name}`);
+      
+      // V2: Record audit for exit (GPS proof) BEFORE registering exit
+      try {
+        await recordExitAudit(
           userId,
           latitude,
           longitude,
           accuracy ?? null,
-          'heartbeat',
-          true,
-          fence.id,
-          fence.name,
-          null // sessionId will be from new session
+          activeSession.location_id,
+          activeSession.location_name || 'Unknown',
+          activeSession.id
         );
+      } catch (e) {
+        // Ignore audit errors
       }
-    }
-
-    // Case 2: OUTSIDE all fences but WITH active session
-    // → Missed exit! Register now.
-    if (!isInside && activeSession) {
-      logger.warn('heartbeat', `⚠️ MISSED EXIT detected! Registering exit from "${activeSession.location_name}"`);
       
       await registerExit(userId, activeSession.location_id);
-      
-      // Register geopoint marking the detection
-      await registerGeopoint(
-        userId,
-        latitude,
-        longitude,
-        accuracy ?? null,
-        'heartbeat',
-        false,
-        null,
-        null,
-        activeSession.id
-      );
     }
 
-    // Case 3: Everything consistent
+    // Case 3: Consistent state
     if ((isInside && activeSession) || (!isInside && !activeSession)) {
-      logger.info('heartbeat', `✅ Consistent state: ${isInside ? `inside "${fence?.name}"` : 'outside all fences'}`);
+      logger.info('heartbeat', `✅ Consistent: ${isInside ? `inside "${fence?.name}"` : 'outside all fences'}`);
     }
 
     const duration = Date.now() - startTime;
@@ -656,6 +533,17 @@ TaskManager.defineTask(HEARTBEAT_TASK_NAME, async () => {
 
   } catch (error) {
     logger.error('heartbeat', 'Error in heartbeat', { error: String(error) });
+    
+    // V2: Capture error
+    const userId = await getBackgroundUserId();
+    if (userId) {
+      try {
+        await captureGeofenceError(error as Error, { userId, action: 'heartbeat' });
+      } catch (e) {
+        // Ignore capture errors
+      }
+    }
+    
     return BackgroundFetch.BackgroundFetchResult.Failed;
   }
 });
@@ -664,12 +552,8 @@ TaskManager.defineTask(HEARTBEAT_TASK_NAME, async () => {
 // HEARTBEAT CONTROL FUNCTIONS
 // ============================================
 
-/**
- * Start periodic heartbeat
- */
 export async function startHeartbeat(): Promise<boolean> {
   try {
-    // Check if BackgroundFetch is available
     const status = await BackgroundFetch.getStatusAsync();
     
     if (status === BackgroundFetch.BackgroundFetchStatus.Restricted) {
@@ -682,14 +566,12 @@ export async function startHeartbeat(): Promise<boolean> {
       return false;
     }
 
-    // Check if already registered
     const isRegistered = await TaskManager.isTaskRegisteredAsync(HEARTBEAT_TASK_NAME);
     if (isRegistered) {
       logger.info('heartbeat', 'Heartbeat already active');
       return true;
     }
 
-    // Register task
     await BackgroundFetch.registerTaskAsync(HEARTBEAT_TASK_NAME, {
       minimumInterval: HEARTBEAT_INTERVAL,
       stopOnTerminate: false,
@@ -704,9 +586,6 @@ export async function startHeartbeat(): Promise<boolean> {
   }
 }
 
-/**
- * Stop heartbeat
- */
 export async function stopHeartbeat(): Promise<void> {
   try {
     const isRegistered = await TaskManager.isTaskRegisteredAsync(HEARTBEAT_TASK_NAME);
@@ -719,9 +598,6 @@ export async function stopHeartbeat(): Promise<void> {
   }
 }
 
-/**
- * Execute heartbeat manually (for tests)
- */
 export async function executeHeartbeatNow(): Promise<HeartbeatResult | null> {
   try {
     logger.info('heartbeat', '🔄 Executing manual heartbeat...');
@@ -748,26 +624,43 @@ export async function executeHeartbeatNow(): Promise<HeartbeatResult | null> {
       batteryLevel: null,
     };
 
-    // Process inconsistencies also in manual
+    // Process inconsistencies
     const activeSession = await getGlobalActiveSession(userId);
 
     if (isInside && fence && !activeSession) {
-      // Check if location was ignored today
       if (await isLocationSkippedToday(fence.id)) {
-        logger.info('heartbeat', `😴 Location "${fence.name}" ignored today`);
+        logger.info('heartbeat', `😴 Location "${fence.name}" skipped today`);
       } else {
         logger.warn('heartbeat', `⚠️ Missed entry detected: ${fence.name}`);
-        await createEntryRecord({
+        const sessionId = await createEntryRecord({
           userId,
           locationId: fence.id,
           locationName: fence.name,
           type: 'automatic',
         });
+        
+        // V2: Record audit
+        try {
+          await recordEntryAudit(userId, latitude, longitude, accuracy ?? null, fence.id, fence.name, sessionId);
+        } catch (e) {
+          // Ignore
+        }
       }
     }
 
     if (!isInside && activeSession) {
       logger.warn('heartbeat', `⚠️ Missed exit detected: ${activeSession.location_name}`);
+      
+      // V2: Record audit before exit
+      try {
+        await recordExitAudit(
+          userId, latitude, longitude, accuracy ?? null,
+          activeSession.location_id, activeSession.location_name || 'Unknown', activeSession.id
+        );
+      } catch (e) {
+        // Ignore
+      }
+      
       await registerExit(userId, activeSession.location_id);
     }
 
@@ -818,9 +711,6 @@ export async function getRegisteredTasks(): Promise<TaskManager.TaskManagerTask[
   }
 }
 
-/**
- * Complete tasks status
- */
 export async function getTasksStatus(): Promise<{
   geofencing: boolean;
   location: boolean;
@@ -837,7 +727,7 @@ export async function getTasksStatus(): Promise<{
     getBackgroundUserId(),
   ]);
 
-  const statusNames = {
+  const statusNames: Record<number, string> = {
     [BackgroundFetch.BackgroundFetchStatus.Restricted]: 'Restricted',
     [BackgroundFetch.BackgroundFetchStatus.Denied]: 'Denied',
     [BackgroundFetch.BackgroundFetchStatus.Available]: 'Available',
@@ -848,7 +738,7 @@ export async function getTasksStatus(): Promise<{
     location,
     heartbeat,
     activeFences: activeFencesCache.length,
-    backgroundFetchStatus: bgStatus !== null ? statusNames[bgStatus] : 'Unknown',
+    backgroundFetchStatus: bgStatus !== null ? statusNames[bgStatus] || 'Unknown' : 'Unknown',
     hasUserId: !!userId,
   };
 }
@@ -857,7 +747,7 @@ export async function getTasksStatus(): Promise<{
 // INITIALIZATION LOG
 // ============================================
 
-logger.info('boot', '📋 Background tasks defined', {
+logger.info('boot', '📋 Background tasks V2 defined', {
   geofence: GEOFENCE_TASK_NAME,
   location: LOCATION_TASK_NAME,
   heartbeat: HEARTBEAT_TASK_NAME,

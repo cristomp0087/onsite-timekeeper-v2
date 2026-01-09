@@ -9,7 +9,10 @@
  * - helpers.ts        → Utility functions
  * - styles.ts         → StyleSheet
  * 
- * REFACTORED: All PT names removed, using EN stores/hooks
+ * UPDATED: 
+ * - Removed Session Finished Modal (was causing confusion)
+ * - Added Day Detail Modal with session selection
+ * - Consistent behavior between week/month views
  */
 
 import React, { useRef } from 'react';
@@ -49,7 +52,6 @@ export default function HomeScreen() {
     userName,
     locations,
     currentSession,
-    lastFinishedSession,
     activeLocation,
     canRestart,
     isGeofencingActive,
@@ -69,21 +71,30 @@ export default function HomeScreen() {
     monthCalendarDays,
     weekTotalMinutes,
     monthTotalMinutes,
-    expandedDay,
     
-    // Selection
+    // Day selection (batch)
     selectionMode,
     selectedDays,
     cancelSelection,
     
-    // Modals
+    // Day Modal (NEW)
+    showDayModal,
+    selectedDayForModal,
+    dayModalSessions,
+    closeDayModal,
+    
+    // Session selection (NEW)
+    selectedSessions,
+    toggleSelectSession,
+    selectAllSessions,
+    deselectAllSessions,
+    
+    // Manual entry modal
     showManualModal,
     setShowManualModal,
-    showSessionFinishedModal,
     manualDate,
     manualLocationId,
     setManualLocationId,
-    // Separate HH:MM fields
     manualEntryH,
     setManualEntryH,
     manualEntryM,
@@ -122,10 +133,10 @@ export default function HomeScreen() {
     // Modal handlers
     openManualEntry,
     handleSaveManual,
-    handleDismissSessionModal,
-    handleShareSession,
-    handleDeleteDay,
+    handleDeleteSession,
+    handleDeleteSelectedSessions,
     handleExport,
+    handleExportFromModal,
     
     // Helpers
     formatDateRange,
@@ -135,83 +146,6 @@ export default function HomeScreen() {
     isToday,
     getDayKey,
   } = useHomeScreen();
-
-  // ============================================
-  // RENDER DAY REPORT (expanded)
-  // ============================================
-
-  const renderDayReport = (date: Date) => {
-    const daySessions = getSessionsForDay(date);
-    const finishedSessions = daySessions.filter((s: ComputedSession) => s.exit_at);
-    const dayKey = getDayKey(date);
-    const totalMinutes = getTotalMinutesForDay(date);
-
-    if (finishedSessions.length === 0) return null;
-
-    return (
-      <View style={styles.dayReportContainer}>
-        <View style={styles.reportCard}>
-          {/* Header */}
-          <View style={styles.reportHeader}>
-            <Text style={styles.reportDate}>
-              📅 {date.toLocaleDateString('en-US', { day: '2-digit', month: 'short', year: '2-digit' })}
-            </Text>
-            <View style={styles.reportActions}>
-              <TouchableOpacity 
-                style={styles.actionBtnInline} 
-                onPress={() => openManualEntry(date)}
-              >
-                <Text style={styles.actionBtnInlineText}>➕</Text>
-              </TouchableOpacity>
-              <TouchableOpacity 
-                style={styles.actionBtnInline} 
-                onPress={() => handleDeleteDay(dayKey, daySessions)}
-              >
-                <Text style={styles.actionBtnInlineText}>🗑️</Text>
-              </TouchableOpacity>
-            </View>
-          </View>
-
-          {/* Sessions */}
-          {finishedSessions.map((session: ComputedSession) => {
-            const isManual = session.type === 'manual';
-            const isEdited = session.manually_edited === 1 && !isManual;
-            const pauseMin = session.pause_minutes || 0;
-            const netTotal = Math.max(0, session.duration_minutes - pauseMin);
-            
-            return (
-              <View key={session.id} style={styles.reportSession}>
-                <Text style={styles.reportLocal}>📍 {session.location_name}</Text>
-                
-                {isManual || isEdited ? (
-                  <Text style={styles.reportTimeEdited}>
-                    *Edited 》{formatTimeAMPM(session.entry_at)} → {formatTimeAMPM(session.exit_at!)}
-                  </Text>
-                ) : (
-                  <Text style={styles.reportTimeGps}>
-                    *GPS    》{formatTimeAMPM(session.entry_at)} → {formatTimeAMPM(session.exit_at!)}
-                  </Text>
-                )}
-                
-                {pauseMin > 0 && (
-                  <Text style={styles.reportPausa}>Break: {pauseMin}min</Text>
-                )}
-                
-                <Text style={styles.reportSessionTotal}>▸ {formatDuration(netTotal)}</Text>
-              </View>
-            );
-          })}
-
-          {/* Day total (only if multiple sessions) */}
-          {finishedSessions.length > 1 && (
-            <View style={styles.reportDayTotal}>
-              <Text style={styles.reportDayTotalText}>Day Total: {formatDuration(totalMinutes)}</Text>
-            </View>
-          )}
-        </View>
-      </View>
-    );
-  };
 
   // ============================================
   // RENDER
@@ -357,65 +291,60 @@ export default function HomeScreen() {
         <>
           {weekCalendarDays.map((day: CalendarDay) => {
             const dayKey = getDayKey(day.date);
-            const isExpanded = expandedDay === dayKey && !selectionMode;
             const hasSessions = day.sessions.length > 0;
             const isTodayDate = isToday(day.date);
             const hasActive = day.sessions.some((s: ComputedSession) => !s.exit_at);
             const isSelected = selectedDays.has(dayKey);
 
             return (
-              <View key={dayKey}>
-                <TouchableOpacity
-                  style={[
-                    styles.dayRow,
-                    isTodayDate && styles.dayRowToday,
-                    isSelected && styles.dayRowSelected,
-                  ]}
-                  onPress={() => handleDayPress(dayKey, hasSessions)}
-                  onLongPress={() => handleDayLongPress(dayKey, hasSessions)}
-                  delayLongPress={400}
-                  activeOpacity={0.7}
-                >
-                  {selectionMode && hasSessions && (
-                    <View style={[styles.checkbox, isSelected && styles.checkboxSelected]}>
-                      {isSelected && <Text style={styles.checkmark}>✓</Text>}
+              <TouchableOpacity
+                key={dayKey}
+                style={[
+                  styles.dayRow,
+                  isTodayDate && styles.dayRowToday,
+                  isSelected && styles.dayRowSelected,
+                ]}
+                onPress={() => handleDayPress(dayKey, hasSessions)}
+                onLongPress={() => handleDayLongPress(dayKey, hasSessions)}
+                delayLongPress={400}
+                activeOpacity={0.7}
+              >
+                {selectionMode && hasSessions && (
+                  <View style={[styles.checkbox, isSelected && styles.checkboxSelected]}>
+                    {isSelected && <Text style={styles.checkmark}>✓</Text>}
+                  </View>
+                )}
+
+                <View style={styles.dayLeft}>
+                  <Text style={[styles.dayName, isTodayDate && styles.dayNameToday]}>{day.weekday}</Text>
+                  <View style={[styles.dayCircle, isTodayDate && styles.dayCircleToday]}>
+                    <Text style={[styles.dayNumber, isTodayDate && styles.dayNumberToday]}>{day.dayNumber}</Text>
+                  </View>
+                </View>
+
+                <View style={styles.dayRight}>
+                  {!hasSessions ? (
+                    <View style={styles.dayEmpty}>
+                      <Text style={styles.dayEmptyText}>No record</Text>
+                      {!selectionMode && (
+                        <TouchableOpacity style={styles.addBtn} onPress={() => openManualEntry(day.date)}>
+                          <Text style={styles.addBtnText}>+</Text>
+                        </TouchableOpacity>
+                      )}
+                    </View>
+                  ) : (
+                    <View style={styles.dayPreview}>
+                      <Text style={[styles.dayPreviewDuration, hasActive && { color: colors.success }]}>
+                        {hasActive ? 'In progress' : formatDuration(day.totalMinutes)}
+                      </Text>
                     </View>
                   )}
+                </View>
 
-                  <View style={styles.dayLeft}>
-                    <Text style={[styles.dayName, isTodayDate && styles.dayNameToday]}>{day.weekday}</Text>
-                    <View style={[styles.dayCircle, isTodayDate && styles.dayCircleToday]}>
-                      <Text style={[styles.dayNumber, isTodayDate && styles.dayNumberToday]}>{day.dayNumber}</Text>
-                    </View>
-                  </View>
-
-                  <View style={styles.dayRight}>
-                    {!hasSessions ? (
-                      <View style={styles.dayEmpty}>
-                        <Text style={styles.dayEmptyText}>No record</Text>
-                        {!selectionMode && (
-                          <TouchableOpacity style={styles.addBtn} onPress={() => openManualEntry(day.date)}>
-                            <Text style={styles.addBtnText}>+</Text>
-                          </TouchableOpacity>
-                        )}
-                      </View>
-                    ) : (
-                      <View style={styles.dayPreview}>
-                        <Text style={[styles.dayPreviewDuration, hasActive && { color: colors.success }]}>
-                          {hasActive ? 'In progress' : formatDuration(day.totalMinutes)}
-                        </Text>
-                      </View>
-                    )}
-                  </View>
-
-                  {hasSessions && !selectionMode && (
-                    <Text style={styles.expandIcon}>{isExpanded ? '▲' : '▼'}</Text>
-                  )}
-                </TouchableOpacity>
-
-                {/* Expanded day report */}
-                {isExpanded && renderDayReport(day.date)}
-              </View>
+                {hasSessions && !selectionMode && (
+                  <Text style={styles.expandIcon}>▶</Text>
+                )}
+              </TouchableOpacity>
             );
           })}
         </>
@@ -473,13 +402,6 @@ export default function HomeScreen() {
               );
             })}
           </View>
-
-          {/* Expanded day report for month view */}
-          {expandedDay && !selectionMode && (
-            <View style={styles.monthExpandedReport}>
-              {renderDayReport(new Date(expandedDay.replace(/-/g, '/')))}
-            </View>
-          )}
         </View>
       )}
 
@@ -496,7 +418,176 @@ export default function HomeScreen() {
         </TouchableOpacity>
       )}
 
+      {/* ============================================ */}
+      {/* DAY DETAIL MODAL (NEW!) */}
+      {/* ============================================ */}
+      <Modal
+        visible={showDayModal}
+        transparent
+        animationType="slide"
+        onRequestClose={closeDayModal}
+      >
+        <View style={styles.modalOverlay}>
+          <View style={styles.dayModalContent}>
+            {/* Header */}
+            <View style={styles.dayModalHeader}>
+              <Text style={styles.dayModalTitle}>
+                📅 {selectedDayForModal?.toLocaleDateString('en-US', { 
+                  weekday: 'short', 
+                  day: '2-digit', 
+                  month: 'short' 
+                })}
+              </Text>
+              <View style={styles.dayModalHeaderActions}>
+                <TouchableOpacity 
+                  style={styles.dayModalHeaderBtn} 
+                  onPress={() => selectedDayForModal && openManualEntry(selectedDayForModal)}
+                >
+                  <Text style={styles.dayModalHeaderBtnText}>➕</Text>
+                </TouchableOpacity>
+                <TouchableOpacity 
+                  style={styles.dayModalHeaderBtn} 
+                  onPress={closeDayModal}
+                >
+                  <Text style={styles.dayModalHeaderBtnText}>✕</Text>
+                </TouchableOpacity>
+              </View>
+            </View>
+
+            {/* Selection controls */}
+            {dayModalSessions.filter(s => s.exit_at).length > 1 && (
+              <View style={styles.dayModalSelectionBar}>
+                <Text style={styles.dayModalSelectionText}>
+                  {selectedSessions.size > 0 
+                    ? `${selectedSessions.size} selected` 
+                    : 'Tap to select sessions'}
+                </Text>
+                <View style={styles.dayModalSelectionActions}>
+                  {selectedSessions.size > 0 ? (
+                    <>
+                      <TouchableOpacity onPress={deselectAllSessions}>
+                        <Text style={styles.dayModalSelectionBtn}>Clear</Text>
+                      </TouchableOpacity>
+                      <TouchableOpacity onPress={handleDeleteSelectedSessions}>
+                        <Text style={[styles.dayModalSelectionBtn, { color: colors.error }]}>Delete</Text>
+                      </TouchableOpacity>
+                    </>
+                  ) : (
+                    <TouchableOpacity onPress={selectAllSessions}>
+                      <Text style={styles.dayModalSelectionBtn}>Select All</Text>
+                    </TouchableOpacity>
+                  )}
+                </View>
+              </View>
+            )}
+
+            {/* Sessions List */}
+            <ScrollView style={styles.dayModalSessions}>
+              {dayModalSessions.filter(s => s.exit_at).length === 0 ? (
+                <View style={styles.dayModalEmpty}>
+                  <Text style={styles.dayModalEmptyText}>No completed sessions</Text>
+                  <TouchableOpacity 
+                    style={styles.dayModalAddBtn}
+                    onPress={() => selectedDayForModal && openManualEntry(selectedDayForModal)}
+                  >
+                    <Text style={styles.dayModalAddBtnText}>➕ Add Manual Entry</Text>
+                  </TouchableOpacity>
+                </View>
+              ) : (
+                dayModalSessions
+                  .filter(s => s.exit_at)
+                  .map((session: ComputedSession) => {
+                    const isSessionSelected = selectedSessions.has(session.id);
+                    const isManual = session.type === 'manual';
+                    const isEdited = session.manually_edited === 1 && !isManual;
+                    const pauseMin = session.pause_minutes || 0;
+                    const netTotal = Math.max(0, session.duration_minutes - pauseMin);
+
+                    return (
+                      <TouchableOpacity
+                        key={session.id}
+                        style={[
+                          styles.dayModalSession,
+                          isSessionSelected && styles.dayModalSessionSelected
+                        ]}
+                        onPress={() => toggleSelectSession(session.id)}
+                        onLongPress={() => handleDeleteSession(session)}
+                        delayLongPress={600}
+                      >
+                        <View style={[
+                          styles.dayModalCheckbox,
+                          isSessionSelected && styles.dayModalCheckboxSelected
+                        ]}>
+                          {isSessionSelected && <Text style={styles.dayModalCheckmark}>✓</Text>}
+                        </View>
+                        
+                        <View style={styles.dayModalSessionInfo}>
+                          <View style={styles.dayModalSessionHeader}>
+                            <Text style={styles.dayModalSessionLocation}>📍 {session.location_name}</Text>
+                            <View style={[styles.dayModalSessionDot, { backgroundColor: session.color || colors.primary }]} />
+                          </View>
+                          
+                          <Text style={[
+                            styles.dayModalSessionTime,
+                            (isManual || isEdited) && styles.dayModalSessionTimeEdited
+                          ]}>
+                            {isManual || isEdited ? '*Edited 》' : '*GPS    》'}
+                            {formatTimeAMPM(session.entry_at)} → {formatTimeAMPM(session.exit_at!)}
+                          </Text>
+                          
+                          {pauseMin > 0 && (
+                            <Text style={styles.dayModalSessionPause}>Break: {pauseMin}min</Text>
+                          )}
+                          
+                          <Text style={styles.dayModalSessionTotal}>▸ {formatDuration(netTotal)}</Text>
+                        </View>
+                      </TouchableOpacity>
+                    );
+                  })
+              )}
+            </ScrollView>
+
+            {/* Day Total */}
+            {dayModalSessions.filter(s => s.exit_at).length > 0 && (
+              <View style={styles.dayModalTotalBar}>
+                <Text style={styles.dayModalTotalLabel}>Day Total:</Text>
+                <Text style={styles.dayModalTotalValue}>
+                  {formatDuration(
+                    dayModalSessions
+                      .filter(s => s.exit_at)
+                      .reduce((acc, s) => {
+                        const pauseMin = s.pause_minutes || 0;
+                        return acc + Math.max(0, s.duration_minutes - pauseMin);
+                      }, 0)
+                  )}
+                </Text>
+              </View>
+            )}
+
+            {/* Footer */}
+            <View style={styles.dayModalFooter}>
+              <TouchableOpacity style={styles.dayModalCancelBtn} onPress={closeDayModal}>
+                <Text style={styles.dayModalCancelBtnText}>Close</Text>
+              </TouchableOpacity>
+              <TouchableOpacity 
+                style={styles.dayModalExportBtn} 
+                onPress={handleExportFromModal}
+                disabled={dayModalSessions.filter(s => s.exit_at).length === 0}
+              >
+                <Text style={styles.dayModalExportBtnText}>
+                  📤 {selectedSessions.size > 0 
+                    ? `Export (${selectedSessions.size})` 
+                    : 'Export Day'}
+                </Text>
+              </TouchableOpacity>
+            </View>
+          </View>
+        </View>
+      </Modal>
+
+      {/* ============================================ */}
       {/* MANUAL ENTRY MODAL */}
+      {/* ============================================ */}
       <Modal
         visible={showManualModal}
         transparent
@@ -630,46 +721,7 @@ export default function HomeScreen() {
         </View>
       </Modal>
 
-      {/* SESSION FINISHED MODAL */}
-      <Modal
-        visible={showSessionFinishedModal && !!lastFinishedSession}
-        transparent
-        animationType="fade"
-        onRequestClose={handleDismissSessionModal}
-      >
-        <View style={styles.sessionModalOverlay}>
-          <View style={styles.sessionModalContent}>
-            <Text style={styles.sessionModalEmoji}>✅</Text>
-            <Text style={styles.sessionModalTitle}>Session Finished</Text>
-            
-            {lastFinishedSession && (
-              <>
-                <Text style={styles.sessionModalLocation}>
-                  📍 {lastFinishedSession.location_name}
-                </Text>
-                <Text style={styles.sessionModalDuration}>
-                  {formatDuration(lastFinishedSession.duration_minutes)}
-                </Text>
-              </>
-            )}
-
-            <View style={styles.sessionModalActions}>
-              <TouchableOpacity 
-                style={styles.sessionModalBtnSecondary} 
-                onPress={handleDismissSessionModal}
-              >
-                <Text style={styles.sessionModalBtnSecondaryText}>OK</Text>
-              </TouchableOpacity>
-              <TouchableOpacity 
-                style={styles.sessionModalBtnPrimary} 
-                onPress={handleShareSession}
-              >
-                <Text style={styles.sessionModalBtnPrimaryText}>📤 Share</Text>
-              </TouchableOpacity>
-            </View>
-          </View>
-        </View>
-      </Modal>
+      {/* REMOVED: Session Finished Modal - was causing confusion about where reports are */}
 
       <View style={{ height: 32 }} />
     </ScrollView>

@@ -10,14 +10,13 @@ import {
   generateUUID,
   now,
   calculateDuration,
-  registerSyncLog,
   type RecordDB,
   type RecordType,
   type ComputedSession,
   type DayStats,
 } from './core';
 import { getLocationById } from './locations';
-import { incrementTelemetry } from './tracking';
+import { trackMetric, trackSessionMinutes } from './analytics';
 
 // ============================================
 // TYPES
@@ -62,14 +61,16 @@ export async function createEntryRecord(params: CreateRecordParams): Promise<str
       ]
     );
 
-    // Sync log
-    await registerSyncLog(params.userId, 'record', id, 'create', null, params);
-
-    // Increment telemetry
-    if (params.type === 'manual') {
-      await incrementTelemetry(params.userId, 'manual_entries_count');
-    } else {
-      await incrementTelemetry(params.userId, 'geofence_entries_count');
+    // Track analytics
+    try {
+      const isManual = params.type === 'manual';
+      if (isManual) {
+        await trackMetric(params.userId, 'manual_entries');
+      } else {
+        await trackMetric(params.userId, 'auto_entries');
+      }
+    } catch (e) {
+      // Ignore tracking errors
     }
 
     logger.info('database', `📥 Record created: ${params.locationName}`, { id });
@@ -107,11 +108,15 @@ export async function registerExit(
       [exitTime.toISOString(), session.id]
     );
 
-    // Sync log
-    await registerSyncLog(userId, 'record', session.id, 'update', 
-      { exit_at: null }, 
-      { exit_at: exitTime.toISOString() }
-    );
+    // Track session minutes
+    try {
+      const duration = calculateDuration(session.entry_at, exitTime.toISOString());
+      const pauseMin = session.pause_minutes || 0;
+      const netMinutes = Math.max(0, duration - pauseMin);
+      await trackSessionMinutes(userId, netMinutes, session.type === 'manual');
+    } catch (e) {
+      // Ignore tracking errors
+    }
 
     logger.info('database', `📤 Exit registered`, { id: session.id, adjustmentMinutes });
   } catch (error) {

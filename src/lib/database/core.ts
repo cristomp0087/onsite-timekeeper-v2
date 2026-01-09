@@ -2,6 +2,14 @@
  * Database Core - OnSite Timekeeper
  * 
  * SQLite instance, initialization, types and helpers
+ * 
+ * V2 REFACTOR:
+ * - Removed heartbeat_log (redundant)
+ * - Removed geopoints (over-collection)
+ * - Removed sync_log (overengineered)
+ * - Added analytics_daily (unified metrics)
+ * - Added error_log (structured errors)
+ * - Added location_audit (only entry/exit GPS proof)
  */
 
 import * as SQLite from 'expo-sqlite';
@@ -14,14 +22,12 @@ import { logger } from '../logger';
 export const db = SQLite.openDatabaseSync('onsite-timekeeper.db');
 
 // ============================================
-// TYPES
+// TYPES - CORE
 // ============================================
 
 export type LocationStatus = 'active' | 'deleted' | 'pending_delete' | 'syncing';
 export type RecordType = 'automatic' | 'manual';
-export type SyncLogAction = 'create' | 'update' | 'delete' | 'sync_up' | 'sync_down';
-export type SyncLogStatus = 'pending' | 'synced' | 'conflict' | 'failed';
-export type GeopointSource = 'polling' | 'geofence' | 'heartbeat' | 'background' | 'manual';
+export type AuditEventType = 'entry' | 'exit' | 'dispute' | 'correction';
 
 export interface LocationDB {
   id: string;
@@ -57,19 +63,6 @@ export interface RecordDB {
   synced_at: string | null;
 }
 
-export interface SyncLogDB {
-  id: string;
-  user_id: string;
-  entity_type: 'location' | 'record';
-  entity_id: string;
-  action: SyncLogAction;
-  old_value: string | null;
-  new_value: string | null;
-  sync_status: SyncLogStatus;
-  error_message: string | null;
-  created_at: string;
-}
-
 // Session with computed fields for UI
 export interface ComputedSession extends RecordDB {
   status: 'active' | 'paused' | 'finished';
@@ -81,68 +74,93 @@ export interface DayStats {
   total_sessions: number;
 }
 
-export interface HeartbeatLogDB {
-  id: string;
-  user_id: string;
-  timestamp: string;
-  latitude: number;
-  longitude: number;
-  accuracy: number | null;
-  inside_fence: number; // 0 or 1 (SQLite has no boolean)
-  fence_id: string | null;
-  fence_name: string | null;
-  session_id: string | null;
-  battery_level: number | null;
-  created_at: string;
-}
+// ============================================
+// TYPES - ANALYTICS
+// ============================================
 
-export interface GeopointDB {
-  id: string;
-  session_id: string | null;
-  user_id: string;
-  latitude: number;
-  longitude: number;
-  accuracy: number | null;
-  timestamp: string;
-  source: GeopointSource;
-  inside_fence: number; // 0 or 1
-  fence_id: string | null;
-  fence_name: string | null;
-  created_at: string;
-  synced_at: string | null;
-}
-
-export interface TelemetryDailyDB {
+export interface AnalyticsDailyDB {
   date: string; // YYYY-MM-DD (PRIMARY KEY with user_id)
   user_id: string;
   
-  // App usage
+  // Business metrics
+  sessions_count: number;
+  total_minutes: number;
+  manual_entries: number;
+  auto_entries: number;
+  locations_created: number;
+  locations_deleted: number;
+  
+  // Product metrics (UX)
   app_opens: number;
+  app_foreground_seconds: number;
+  notifications_shown: number;
+  notifications_actioned: number;
+  features_used: string; // JSON array
   
-  // Entries
-  manual_entries_count: number;
-  geofence_entries_count: number;
-  
-  // Geofence performance
+  // Debug metrics
+  errors_count: number;
+  sync_attempts: number;
+  sync_failures: number;
   geofence_triggers: number;
   geofence_accuracy_sum: number;
   geofence_accuracy_count: number;
   
-  // Background & Battery
-  background_location_checks: number;
-  battery_level_sum: number;
-  battery_level_count: number;
+  // Metadata
+  app_version: string | null;
+  os: string | null;
+  device_model: string | null;
   
-  // Sync health
-  offline_entries_count: number;
-  sync_attempts: number;
-  sync_failures: number;
+  created_at: string;
+  synced_at: string | null;
+}
+
+// ============================================
+// TYPES - ERROR LOG
+// ============================================
+
+export interface ErrorLogDB {
+  id: string;
+  user_id: string | null;
   
-  // Heartbeat (aggregated)
-  heartbeat_count: number;
-  heartbeat_inside_fence_count: number;
+  // Error details
+  error_type: string;
+  error_message: string;
+  error_stack: string | null;
+  error_context: string | null; // JSON
   
   // Metadata
+  app_version: string | null;
+  os: string | null;
+  os_version: string | null;
+  device_model: string | null;
+  
+  // Timestamps
+  occurred_at: string;
+  created_at: string;
+  synced_at: string | null;
+}
+
+// ============================================
+// TYPES - LOCATION AUDIT
+// ============================================
+
+export interface LocationAuditDB {
+  id: string;
+  user_id: string;
+  session_id: string | null;
+  
+  // Event info
+  event_type: AuditEventType;
+  location_id: string | null;
+  location_name: string | null;
+  
+  // GPS data
+  latitude: number;
+  longitude: number;
+  accuracy: number | null;
+  
+  // Timestamps
+  occurred_at: string;
   created_at: string;
   synced_at: string | null;
 }
@@ -160,7 +178,11 @@ export async function initDatabase(): Promise<void> {
   }
 
   try {
-    logger.info('boot', '🗄️ Initializing SQLite...');
+    logger.info('boot', '🗄️ Initializing SQLite V2...');
+
+    // ============================================
+    // CORE TABLES
+    // ============================================
 
     // Locations table
     db.execSync(`
@@ -202,108 +224,149 @@ export async function initDatabase(): Promise<void> {
       )
     `);
 
-    // Sync audit table
+    // ============================================
+    // ANALYTICS TABLE (replaces telemetry_daily)
+    // ============================================
+
     db.execSync(`
-      CREATE TABLE IF NOT EXISTS sync_log (
-        id TEXT PRIMARY KEY,
+      CREATE TABLE IF NOT EXISTS analytics_daily (
+        date TEXT NOT NULL,
         user_id TEXT NOT NULL,
-        entity_type TEXT NOT NULL,
-        entity_id TEXT NOT NULL,
-        action TEXT NOT NULL,
-        old_value TEXT,
-        new_value TEXT,
-        sync_status TEXT DEFAULT 'pending',
-        error_message TEXT,
-        created_at TEXT DEFAULT CURRENT_TIMESTAMP
+        
+        -- Business metrics
+        sessions_count INTEGER DEFAULT 0,
+        total_minutes INTEGER DEFAULT 0,
+        manual_entries INTEGER DEFAULT 0,
+        auto_entries INTEGER DEFAULT 0,
+        locations_created INTEGER DEFAULT 0,
+        locations_deleted INTEGER DEFAULT 0,
+        
+        -- Product metrics (UX)
+        app_opens INTEGER DEFAULT 0,
+        app_foreground_seconds INTEGER DEFAULT 0,
+        notifications_shown INTEGER DEFAULT 0,
+        notifications_actioned INTEGER DEFAULT 0,
+        features_used TEXT DEFAULT '[]',
+        
+        -- Debug metrics
+        errors_count INTEGER DEFAULT 0,
+        sync_attempts INTEGER DEFAULT 0,
+        sync_failures INTEGER DEFAULT 0,
+        geofence_triggers INTEGER DEFAULT 0,
+        geofence_accuracy_sum REAL DEFAULT 0,
+        geofence_accuracy_count INTEGER DEFAULT 0,
+        
+        -- Metadata
+        app_version TEXT,
+        os TEXT,
+        device_model TEXT,
+        
+        created_at TEXT DEFAULT CURRENT_TIMESTAMP,
+        synced_at TEXT,
+        
+        PRIMARY KEY (date, user_id)
       )
     `);
 
-    // Heartbeat logs table (LEGACY)
-    db.execSync(`
-      CREATE TABLE IF NOT EXISTS heartbeat_log (
-        id TEXT PRIMARY KEY,
-        user_id TEXT NOT NULL,
-        timestamp TEXT NOT NULL,
-        latitude REAL NOT NULL,
-        longitude REAL NOT NULL,
-        accuracy REAL,
-        inside_fence INTEGER DEFAULT 0,
-        fence_id TEXT,
-        fence_name TEXT,
-        session_id TEXT,
-        battery_level INTEGER,
-        created_at TEXT DEFAULT CURRENT_TIMESTAMP
-      )
-    `);
+    // ============================================
+    // ERROR LOG TABLE (new)
+    // ============================================
 
-    // Heartbeat indexes
-    db.execSync(`CREATE INDEX IF NOT EXISTS idx_heartbeat_user ON heartbeat_log(user_id)`);
-    db.execSync(`CREATE INDEX IF NOT EXISTS idx_heartbeat_timestamp ON heartbeat_log(timestamp)`);
-    db.execSync(`CREATE INDEX IF NOT EXISTS idx_heartbeat_session ON heartbeat_log(session_id)`);
-
-    // Geopoints table
     db.execSync(`
-      CREATE TABLE IF NOT EXISTS geopoints (
+      CREATE TABLE IF NOT EXISTS error_log (
         id TEXT PRIMARY KEY,
-        session_id TEXT,
-        user_id TEXT NOT NULL,
-        latitude REAL NOT NULL,
-        longitude REAL NOT NULL,
-        accuracy REAL,
-        timestamp TEXT NOT NULL,
-        source TEXT DEFAULT 'polling',
-        inside_fence INTEGER DEFAULT 0,
-        fence_id TEXT,
-        fence_name TEXT,
+        user_id TEXT,
+        
+        -- Error details
+        error_type TEXT NOT NULL,
+        error_message TEXT NOT NULL,
+        error_stack TEXT,
+        error_context TEXT,
+        
+        -- Metadata
+        app_version TEXT,
+        os TEXT,
+        os_version TEXT,
+        device_model TEXT,
+        
+        -- Timestamps
+        occurred_at TEXT NOT NULL,
         created_at TEXT DEFAULT CURRENT_TIMESTAMP,
         synced_at TEXT
       )
     `);
 
-    // Geopoints indexes
-    db.execSync(`CREATE INDEX IF NOT EXISTS idx_geopoints_user ON geopoints(user_id)`);
-    db.execSync(`CREATE INDEX IF NOT EXISTS idx_geopoints_session ON geopoints(session_id)`);
-    db.execSync(`CREATE INDEX IF NOT EXISTS idx_geopoints_timestamp ON geopoints(timestamp)`);
+    // ============================================
+    // LOCATION AUDIT TABLE (replaces geopoints)
+    // ============================================
 
-    // Telemetry daily table
     db.execSync(`
-      CREATE TABLE IF NOT EXISTS telemetry_daily (
-        date TEXT NOT NULL,
+      CREATE TABLE IF NOT EXISTS location_audit (
+        id TEXT PRIMARY KEY,
         user_id TEXT NOT NULL,
-        app_opens INTEGER DEFAULT 0,
-        manual_entries_count INTEGER DEFAULT 0,
-        geofence_entries_count INTEGER DEFAULT 0,
-        geofence_triggers INTEGER DEFAULT 0,
-        geofence_accuracy_sum REAL DEFAULT 0,
-        geofence_accuracy_count INTEGER DEFAULT 0,
-        background_location_checks INTEGER DEFAULT 0,
-        battery_level_sum REAL DEFAULT 0,
-        battery_level_count INTEGER DEFAULT 0,
-        offline_entries_count INTEGER DEFAULT 0,
-        sync_attempts INTEGER DEFAULT 0,
-        sync_failures INTEGER DEFAULT 0,
-        heartbeat_count INTEGER DEFAULT 0,
-        heartbeat_inside_fence_count INTEGER DEFAULT 0,
+        session_id TEXT,
+        
+        -- Event info
+        event_type TEXT NOT NULL,
+        location_id TEXT,
+        location_name TEXT,
+        
+        -- GPS data
+        latitude REAL NOT NULL,
+        longitude REAL NOT NULL,
+        accuracy REAL,
+        
+        -- Timestamps
+        occurred_at TEXT NOT NULL,
         created_at TEXT DEFAULT CURRENT_TIMESTAMP,
-        synced_at TEXT,
-        PRIMARY KEY (date, user_id)
+        synced_at TEXT
       )
     `);
 
-    // Telemetry indexes
-    db.execSync(`CREATE INDEX IF NOT EXISTS idx_telemetry_user ON telemetry_daily(user_id)`);
-    db.execSync(`CREATE INDEX IF NOT EXISTS idx_telemetry_synced ON telemetry_daily(synced_at)`);
+    // ============================================
+    // INDEXES
+    // ============================================
 
-    // General indexes
+    // Locations
     db.execSync(`CREATE INDEX IF NOT EXISTS idx_locations_user ON locations(user_id)`);
     db.execSync(`CREATE INDEX IF NOT EXISTS idx_locations_status ON locations(status)`);
+
+    // Records
     db.execSync(`CREATE INDEX IF NOT EXISTS idx_records_user ON records(user_id)`);
     db.execSync(`CREATE INDEX IF NOT EXISTS idx_records_location ON records(location_id)`);
     db.execSync(`CREATE INDEX IF NOT EXISTS idx_records_entry ON records(entry_at)`);
-    db.execSync(`CREATE INDEX IF NOT EXISTS idx_sync_log_entity ON sync_log(entity_type, entity_id)`);
+
+    // Analytics
+    db.execSync(`CREATE INDEX IF NOT EXISTS idx_analytics_user ON analytics_daily(user_id)`);
+    db.execSync(`CREATE INDEX IF NOT EXISTS idx_analytics_synced ON analytics_daily(synced_at)`);
+
+    // Error log
+    db.execSync(`CREATE INDEX IF NOT EXISTS idx_error_user ON error_log(user_id)`);
+    db.execSync(`CREATE INDEX IF NOT EXISTS idx_error_type ON error_log(error_type)`);
+    db.execSync(`CREATE INDEX IF NOT EXISTS idx_error_occurred ON error_log(occurred_at)`);
+
+    // Location audit
+    db.execSync(`CREATE INDEX IF NOT EXISTS idx_audit_user ON location_audit(user_id)`);
+    db.execSync(`CREATE INDEX IF NOT EXISTS idx_audit_session ON location_audit(session_id)`);
+    db.execSync(`CREATE INDEX IF NOT EXISTS idx_audit_occurred ON location_audit(occurred_at)`);
+
+    // ============================================
+    // MIGRATION: Drop deprecated tables
+    // ============================================
+
+    // Check if old tables exist and drop them
+    try {
+      db.execSync(`DROP TABLE IF EXISTS heartbeat_log`);
+      db.execSync(`DROP TABLE IF EXISTS geopoints`);
+      db.execSync(`DROP TABLE IF EXISTS sync_log`);
+      db.execSync(`DROP TABLE IF EXISTS telemetry_daily`);
+      logger.info('database', '🧹 Deprecated tables removed');
+    } catch (e) {
+      // Tables might not exist, that's fine
+    }
 
     dbInitialized = true;
-    logger.info('boot', '✅ SQLite initialized successfully');
+    logger.info('boot', '✅ SQLite V2 initialized successfully');
   } catch (error) {
     logger.error('database', '❌ Error initializing SQLite', { error: String(error) });
     throw error;
@@ -378,72 +441,4 @@ export function formatDuration(minutes: number | null | undefined): string {
   const m = total % 60;
   if (h === 0) return `${m}min`;
   return `${h}h ${m}min`;
-}
-
-// ============================================
-// SYNC LOG (Audit)
-// ============================================
-
-export async function registerSyncLog(
-  userId: string,
-  entityType: 'location' | 'record',
-  entityId: string,
-  action: SyncLogAction,
-  oldValue: unknown | null,
-  newValue: unknown | null,
-  status: SyncLogStatus = 'pending',
-  errorMessage: string | null = null
-): Promise<void> {
-  try {
-    const id = generateUUID();
-    db.runSync(
-      `INSERT INTO sync_log (id, user_id, entity_type, entity_id, action, old_value, new_value, sync_status, error_message, created_at)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-      [
-        id,
-        userId,
-        entityType,
-        entityId,
-        action,
-        oldValue ? JSON.stringify(oldValue) : null,
-        newValue ? JSON.stringify(newValue) : null,
-        status,
-        errorMessage,
-        now()
-      ]
-    );
-    logger.debug('database', `📝 Sync log: ${action} ${entityType}`, { entityId });
-  } catch (error) {
-    logger.error('database', 'Error registering sync log', { error: String(error) });
-  }
-}
-
-export async function getSyncLogs(
-  userId: string,
-  limit: number = 100
-): Promise<SyncLogDB[]> {
-  try {
-    return db.getAllSync<SyncLogDB>(
-      `SELECT * FROM sync_log WHERE user_id = ? ORDER BY created_at DESC LIMIT ?`,
-      [userId, limit]
-    );
-  } catch (error) {
-    logger.error('database', 'Error fetching sync logs', { error: String(error) });
-    return [];
-  }
-}
-
-export async function getSyncLogsByEntity(
-  entityType: 'location' | 'record',
-  entityId: string
-): Promise<SyncLogDB[]> {
-  try {
-    return db.getAllSync<SyncLogDB>(
-      `SELECT * FROM sync_log WHERE entity_type = ? AND entity_id = ? ORDER BY created_at DESC`,
-      [entityType, entityId]
-    );
-  } catch (error) {
-    logger.error('database', 'Error fetching sync logs by entity', { error: String(error) });
-    return [];
-  }
 }

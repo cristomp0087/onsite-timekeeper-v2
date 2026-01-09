@@ -80,7 +80,7 @@ export default function RegisterScreen() {
     setLoading(true);
     setErrors({});
 
-    const { error } = await signUp(email, password, nome);
+    const { error } = await signUp(email, password);
 
     setLoading(false);
 
