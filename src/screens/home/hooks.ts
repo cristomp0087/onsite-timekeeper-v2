@@ -10,6 +10,7 @@
  * REFACTORED: All PT names removed, updated to use EN stores/methods
  * UPDATED: Removed session finished modal, added day detail modal with session selection
  * UPDATED: Added pending export handling for notification flow
+ * FIX: Now uses currentFenceId instead of lastGeofenceEvent for START button (fixes button not appearing)
  */
 
 import { useState, useEffect, useCallback, useMemo } from 'react';
@@ -22,7 +23,8 @@ import {
   useLocationStore, 
   selectLocations, 
   selectActiveGeofence, 
-  selectIsGeofencingActive 
+  selectIsGeofencingActive,
+  selectCurrentFenceId // NEW: Import new selector
 } from '../../stores/locationStore';
 import { useRecordStore } from '../../stores/recordStore';
 import { useSyncStore } from '../../stores/syncStore';
@@ -51,6 +53,9 @@ import {
   type DayTagType,
 } from './helpers';
 
+
+
+
 // ============================================
 // HOOK
 // ============================================
@@ -67,7 +72,11 @@ export function useHomeScreen() {
   const locations = useLocationStore(selectLocations);
   const activeGeofence = useLocationStore(selectActiveGeofence);
   const isGeofencingActive = useLocationStore(selectIsGeofencingActive);
-  const lastGeofenceEvent = useLocationStore(s => s.lastGeofenceEvent);
+  // NEW: Use currentFenceId instead of lastGeofenceEvent
+  const currentFenceId = useLocationStore(selectCurrentFenceId);
+
+
+
   
   const { 
     currentSession, 
@@ -79,6 +88,11 @@ export function useHomeScreen() {
     editRecord,
     deleteRecord,
   } = useRecordStore();
+
+
+   
+
+
   const { syncNow } = useSyncStore();
 
   // Pending export from notification
@@ -155,21 +169,12 @@ export function useHomeScreen() {
   // DERIVED STATE
   // ============================================
 
-  // Determine which fence the user is currently inside (even without active session)
-  const insideFenceId = useMemo(() => {
-    // If there's an active session, use that location
-    if (activeGeofence) return activeGeofence;
-    
-    // If last event was 'enter', user is inside that fence
-    if (lastGeofenceEvent?.type === 'enter') {
-      return lastGeofenceEvent.regionIdentifier;
-    }
-    
-    return null;
-  }, [activeGeofence, lastGeofenceEvent]);
-
-  const activeLocation = insideFenceId ? locations.find(l => l.id === insideFenceId) : null;
+  // FIX: Simplified logic using currentFenceId from store
+  // currentFenceId already tracks which fence user is physically inside,
+  // independent of whether there's an active session
+  const activeLocation = currentFenceId ? locations.find(l => l.id === currentFenceId) : null;
   const canRestart = activeLocation && !currentSession;
+  
   const sessions = viewMode === 'week' ? weekSessions : monthSessions;
   const weekStart = getWeekStart(currentWeek);
   const weekEnd = getWeekEnd(currentWeek);
@@ -269,7 +274,7 @@ export function useHomeScreen() {
   // ============================================
 
   useEffect(() => {
-    if (pendingReportExport?.trigger) {
+    if (pendingReportExport) {
       handlePendingExport();
     }
   }, [pendingReportExport]);
@@ -875,7 +880,13 @@ const handleDayPress = (dayKey: string, hasSessions: boolean) => {
         setShowManualModal(false);
         setManualAbsenceType(null);
         setManualEntryMode('hours');
-        // Note: createManualRecord already calls reloadData()
+        
+        // Reload week/month sessions to show the new record
+        if (viewMode === 'week') {
+          await loadWeekSessions();
+        } else {
+          await loadMonthSessions();
+        }
       } catch (error: any) {
         Alert.alert('Error', error.message || 'Could not save');
       }
@@ -935,7 +946,13 @@ const handleDayPress = (dayKey: string, hasSessions: boolean) => {
 
       setShowManualModal(false);
       setManualPause('');
-      // Note: createManualRecord already calls reloadData()
+      
+      // Reload week/month sessions to show the new record
+      if (viewMode === 'week') {
+        await loadWeekSessions();
+      } else {
+        await loadMonthSessions();
+      }
     } catch (error: any) {
       Alert.alert('Error', error.message || 'Could not save');
     }

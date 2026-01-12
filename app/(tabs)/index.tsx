@@ -13,6 +13,7 @@
  * - Removed Session Finished Modal (was causing confusion)
  * - Added Day Detail Modal with session selection
  * - Consistent behavior between week/month views
+ * - Added Permission Banner for foreground service warnings
  */
 
 import React, { useRef, useState } from 'react';
@@ -39,6 +40,7 @@ import type { WorkLocation } from '../../src/stores/locationStore';
 import { useHomeScreen } from '../../src/screens/home/hooks';
 import { styles } from '../../src/screens/home/styles';
 import { WEEKDAYS_SHORT, type CalendarDay } from '../../src/screens/home/helpers';
+import { HomePermissionBanner } from '../../src/components/PermissionBanner';
 
 // ============================================
 // COMPONENT
@@ -200,6 +202,9 @@ export default function HomeScreen() {
           </View>
         </View>
       </View>
+
+      {/* PERMISSION BANNER - Shows when foreground service killed or permissions missing */}
+      <HomePermissionBanner />
 
       {/* LOGO TOOLTIP MODAL */}
       <Modal

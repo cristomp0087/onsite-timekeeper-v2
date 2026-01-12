@@ -7,6 +7,7 @@
  * FIX: Added auto-start monitoring on initialize
  * FIX: Added setReconfiguring to suppress phantom events during fence restart
  * FIX: Added reconcile callback to check actual state when window closes
+ * FIX: Added currentFenceId to track physical presence inside fence (START button fix)
  */
 
 import { create } from 'zustand';
@@ -48,9 +49,6 @@ import {
   type RecordDB,
 } from '../lib/database';
 import {
-  setGeofenceCallback,
-  setHeartbeatCallback,
-  setReconcileCallback,
   updateActiveFences,
   startHeartbeat,
   stopHeartbeat,
@@ -59,12 +57,12 @@ import {
   setReconfiguring,
   checkInsideFence,
   type GeofenceEvent,
-  type HeartbeatResult,
 } from '../lib/backgroundTasks';
 import { useAuthStore } from './authStore';
 import { useSyncStore } from './syncStore';
 import { useWorkSessionStore } from './workSessionStore';
 import { useRecordStore } from './recordStore';
+import { useSettingsStore } from './settingsStore';
 
 // ============================================
 // CONSTANTS
@@ -74,6 +72,27 @@ const MONITORING_STATE_KEY = '@onsite:monitoringEnabled';
 let isReconciling = false;
 let lastReconcileAt = 0;
 const RECONCILE_COOLDOWN_MS = 2000;
+
+// ============================================
+// HELPER: Calculate distance between two points (Haversine)
+// ============================================
+
+function calculateDistanceMeters(
+  lat1: number,
+  lng1: number,
+  lat2: number,
+  lng2: number
+): number {
+  const R = 6371000; // Earth radius in meters
+  const dLat = (lat2 - lat1) * Math.PI / 180;
+  const dLng = (lng2 - lng1) * Math.PI / 180;
+  const a =
+    Math.sin(dLat / 2) * Math.sin(dLat / 2) +
+    Math.cos(lat1 * Math.PI / 180) * Math.cos(lat2 * Math.PI / 180) *
+    Math.sin(dLng / 2) * Math.sin(dLng / 2);
+  const c = 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
+  return R * c;
+}
 
 // ============================================
 // TYPES (BACKWARD COMPATIBLE)
@@ -98,6 +117,7 @@ export interface LocationState {
   activeSession: RecordDB | null;
   permissionStatus: 'unknown' | 'granted' | 'denied' | 'restricted';
   lastGeofenceEvent: GeofenceEvent | null;
+  currentFenceId: string | null; // NEW: Track which fence user is physically inside
   
   // Timer configs (from settings)
   entryTimeout: number;
@@ -137,6 +157,7 @@ export const selectCurrentLocation = (state: LocationState) => state.currentLoca
 export const selectIsGeofencingActive = (state: LocationState) => state.isMonitoring;
 export const selectActiveGeofence = (state: LocationState) => state.activeSession?.location_id || null;
 export const selectPermissions = (state: LocationState) => state.permissionStatus;
+export const selectCurrentFenceId = (state: LocationState) => state.currentFenceId; // NEW
 
 // ============================================
 // HELPER: Persist monitoring state
@@ -174,6 +195,7 @@ export const useLocationStore = create<LocationState>((set, get) => ({
   activeSession: null,
   permissionStatus: 'unknown',
   lastGeofenceEvent: null,
+  currentFenceId: null, // NEW
   entryTimeout: 120,
   exitTimeout: 60,
   pauseTimeout: 30,
@@ -209,36 +231,29 @@ export const useLocationStore = create<LocationState>((set, get) => ({
             longitude: location.coords.longitude,
             accuracy: location.accuracy,
           }
-        });
-      }
+     });
+        
+        const { locations } = get();
+        for (const fence of locations) {
+          const distance = calculateDistanceMeters(
+            location.coords.latitude,
+            location.coords.longitude,
+            fence.latitude,
+            fence.longitude
+          );
+          if (distance <= fence.radius) {
+            logger.info('geofence', `📍 Boot: Already inside fence "${fence.name}"`);
+            set({ currentFenceId: fence.id });
+            break;
+          }
+        }
+      }  // <- fecha o if (location)
 
       // Initialize work session store (notifications + pending action flow)
       await useWorkSessionStore.getState().initialize();
 
-      // Setup geofence callback
-      setGeofenceCallback(async (event) => {
-        await get().handleGeofenceEvent(event);
-      });
-
-      // Setup heartbeat callback
-      setHeartbeatCallback(async (result: HeartbeatResult) => {
-        logger.debug('heartbeat', 'Heartbeat result received', {
-          isInside: result.isInsideFence,
-          fence: result.fenceName,
-        });
-        
-        // Update active session state
-        const userId = useAuthStore.getState().getUserId();
-        if (userId) {
-          const session = await getGlobalActiveSession(userId);
-          set({ activeSession: session });
-        }
-      });
-
-      // Setup reconcile callback - called when reconfigure window closes
-      setReconcileCallback(async () => {
-        await get().reconcileState();
-      });
+      // NOTE: Callbacks are registered in bootstrap.ts (singleton pattern)
+      // DO NOT register here to avoid duplicates
 
       // Check for active session
       const userId = useAuthStore.getState().getUserId();
@@ -316,6 +331,70 @@ export const useLocationStore = create<LocationState>((set, get) => ({
     const userId = useAuthStore.getState().getUserId();
     if (!userId) throw new Error('User not authenticated');
 
+    // Get minimum distance setting
+    const minDistance = useSettingsStore.getState().distanciaMinimaLocais;
+    const existingLocations = get().locations;
+
+    // Track closest location for audit logging
+    let closestLocation: { name: string; distance: number; minimum: number } | null = null;
+
+    // Check if new location is too close to any existing location
+    for (const existing of existingLocations) {
+      const distance = calculateDistanceMeters(
+        latitude,
+        longitude,
+        existing.latitude,
+        existing.longitude
+      );
+      
+      // Check if circles would overlap (distance < sum of radii + minimum gap)
+      const effectiveMinDistance = Math.max(minDistance, radius + existing.radius);
+      
+      // Track closest for audit
+      if (!closestLocation || distance < closestLocation.distance) {
+        closestLocation = {
+          name: existing.name,
+          distance: Math.round(distance),
+          minimum: effectiveMinDistance,
+        };
+      }
+      
+      if (distance < effectiveMinDistance) {
+        const distanceRounded = Math.round(distance);
+        logger.warn('database', `⚠️ Location too close to "${existing.name}"`, {
+          distance: `${distanceRounded}m`,
+          minimum: `${effectiveMinDistance}m`,
+        });
+        throw new Error(
+          `Too close to "${existing.name}" (${distanceRounded}m). Minimum distance: ${effectiveMinDistance}m`
+        );
+      }
+    }
+
+    // Audit log: record proximity even when validation passes
+    if (closestLocation) {
+      const isTooClose = closestLocation.distance < closestLocation.minimum;
+      const margin = closestLocation.distance - closestLocation.minimum;
+      
+      if (isTooClose || margin < 50) {
+        // Log warning if validation somehow passed but distance is suspicious
+        logger.warn('database', `🚨 AUDIT: Location created with small margin`, {
+          newLocation: name,
+          closestTo: closestLocation.name,
+          distance: `${closestLocation.distance}m`,
+          minimum: `${closestLocation.minimum}m`,
+          margin: `${margin}m`,
+          coords: `${latitude.toFixed(6)},${longitude.toFixed(6)}`,
+        });
+      } else {
+        logger.debug('database', `📍 Location proximity check passed`, {
+          closestTo: closestLocation.name,
+          distance: `${closestLocation.distance}m`,
+          margin: `${margin}m`,
+        });
+      }
+    }
+
     try {
       const id = await createLocation({
         userId,
@@ -340,10 +419,8 @@ export const useLocationStore = create<LocationState>((set, get) => ({
   const { locations, permissionStatus } = get();
   if (permissionStatus === 'granted' && locations.length > 0) {
     logger.info('geofence', '🚀 First location added, auto-starting monitoring');
-    // Use restartMonitoring to suppress phantom events
-    setReconfiguring(true);
+    // NOTE: No need for setReconfiguring here - first location has no phantom events
     await get().startMonitoring();
-    // Reconcile will be called automatically when window closes
   }
 }
 
@@ -364,6 +441,71 @@ export const useLocationStore = create<LocationState>((set, get) => ({
   editLocation: async (id, updates) => {
     const userId = useAuthStore.getState().getUserId();
     if (!userId) throw new Error('User not authenticated');
+
+    // Get current location data
+    const currentLocation = get().locations.find(l => l.id === id);
+    if (!currentLocation) throw new Error('Location not found');
+
+    // Calculate effective values after update
+    const newLatitude = updates.latitude ?? currentLocation.latitude;
+    const newLongitude = updates.longitude ?? currentLocation.longitude;
+    const newRadius = updates.radius ?? currentLocation.radius;
+
+    // Validate proximity if position or radius changed
+    if (updates.latitude !== undefined || updates.longitude !== undefined || updates.radius !== undefined) {
+      const minDistance = useSettingsStore.getState().distanciaMinimaLocais;
+      const otherLocations = get().locations.filter(l => l.id !== id);
+
+      let closestLocation: { name: string; distance: number; minimum: number } | null = null;
+
+      for (const other of otherLocations) {
+        const distance = calculateDistanceMeters(
+          newLatitude,
+          newLongitude,
+          other.latitude,
+          other.longitude
+        );
+
+        const effectiveMinDistance = Math.max(minDistance, newRadius + other.radius);
+
+        // Track closest for audit
+        if (!closestLocation || distance < closestLocation.distance) {
+          closestLocation = {
+            name: other.name,
+            distance: Math.round(distance),
+            minimum: effectiveMinDistance,
+          };
+        }
+
+        if (distance < effectiveMinDistance) {
+          const distanceRounded = Math.round(distance);
+          logger.warn('database', `⚠️ Edit would overlap with "${other.name}"`, {
+            location: currentLocation.name,
+            newRadius: `${newRadius}m`,
+            distance: `${distanceRounded}m`,
+            minimum: `${effectiveMinDistance}m`,
+          });
+          throw new Error(
+            `Would overlap with "${other.name}" (${distanceRounded}m apart). Minimum: ${effectiveMinDistance}m`
+          );
+        }
+      }
+
+      // Audit log for edits
+      if (closestLocation) {
+        const margin = closestLocation.distance - closestLocation.minimum;
+        if (margin < 50) {
+          logger.warn('database', `🚨 AUDIT: Location edited with small margin`, {
+            location: currentLocation.name,
+            closestTo: closestLocation.name,
+            distance: `${closestLocation.distance}m`,
+            minimum: `${closestLocation.minimum}m`,
+            margin: `${margin}m`,
+            newRadius: updates.radius ? `${newRadius}m` : 'unchanged',
+          });
+        }
+      }
+    }
 
     try {
       await updateLocation(id, updates);
@@ -560,7 +702,13 @@ export const useLocationStore = create<LocationState>((set, get) => ({
       set({ isMonitoring: true });
       logger.info('geofence', `🔄 Monitoring restarted (${locations.length} fences)`);
       
-      // Window will auto-close after 3s and call reconcileState()
+      // FIX: Close reconfigure window after delay to let native events arrive
+      // This will trigger drainReconfigureQueue()
+      setTimeout(() => {
+        setReconfiguring(false);
+        logger.debug('geofence', '🔓 Reconfigure window closed');
+      }, 1000);
+      
       return true;
     } catch (error) {
       setReconfiguring(false);
@@ -631,12 +779,14 @@ export const useLocationStore = create<LocationState>((set, get) => ({
 
       if (isInside && fence && !activeSession) {
         logger.info('geofence', `🧭 Reconcile: inside ${fence.name} with no session — pending entry flow`);
+        set({ currentFenceId: fence.id }); // NEW: Update currentFenceId
         await sessionFlow.handleGeofenceEnter(fence.id, fence.name, payloadCoords);
       }
 
       // Case 2: Outside all fences but have session → defer to WorkSessionStore (pending exit flow)
       else if (!isInside && activeSession) {
         logger.info('geofence', `🧭 Reconcile: outside with active session — pending exit flow`);
+        set({ currentFenceId: null }); // NEW: Clear currentFenceId
         await sessionFlow.handleGeofenceExit(
           activeSession.location_id,
           activeSession.location_name || 'Unknown',
@@ -647,6 +797,8 @@ export const useLocationStore = create<LocationState>((set, get) => ({
       // Case 3: Already consistent
       else {
         logger.info('geofence', `✅ Reconcile: State already consistent`);
+        // NEW: Update currentFenceId based on reconcile result
+        set({ currentFenceId: isInside && fence ? fence.id : null });
       }
 
       // Refresh active session from DB (best-effort)
@@ -664,14 +816,30 @@ export const useLocationStore = create<LocationState>((set, get) => ({
   // ============================================
   // HANDLE GEOFENCE EVENT
   // ============================================
-  handleGeofenceEvent: async (event) => {
+ // ============================================
+// HANDLE GEOFENCE EVENT
+// ============================================
+handleGeofenceEvent: async (event) => {
+    
     const userId = useAuthStore.getState().getUserId();
     if (!userId) {
       logger.warn('geofence', 'Cannot handle event: no userId');
       return;
     }
 
-    set({ lastGeofenceEvent: event });
+    // NEW: Update currentFenceId based on event type
+    if (event.type === 'enter') {
+
+      
+      set({ lastGeofenceEvent: event, currentFenceId: event.regionIdentifier });
+    } else if (event.type === 'exit') {
+      // Only clear if exiting the fence we're currently in
+      const current = get().currentFenceId;
+      set({ 
+        lastGeofenceEvent: event, 
+        currentFenceId: current === event.regionIdentifier ? null : current 
+      });
+    }
 
     const location = await getLocationById(event.regionIdentifier);
     if (!location) {
@@ -901,6 +1069,7 @@ export const useLocationStore = create<LocationState>((set, get) => ({
       permissionStatus: state.permissionStatus,
       activeSession: state.activeSession?.location_name || null,
       lastEvent: state.lastGeofenceEvent?.type || null,
+      currentFenceId: state.currentFenceId, // NEW
       currentLocation: state.currentLocation ? {
         lat: state.currentLocation.latitude.toFixed(6),
         lng: state.currentLocation.longitude.toFixed(6),

@@ -428,13 +428,19 @@ async function uploadLocations(userId: string): Promise<{ count: number; errors:
         });
 
         if (error) {
-          errors.push(`Location ${location.name}: ${error.message}`);
+          const errMsg = `Location ${location.name}: ${error.message}`;
+          errors.push(errMsg);
+          logger.error('sync', `❌ Upload location failed: ${location.name}`, { error: error.message, code: error.code });
+          await captureSyncError(new Error(error.message), { userId, action: 'uploadLocations', locationName: location.name });
         } else {
           await markLocationSynced(location.id);
           count++;
         }
       } catch (e) {
-        errors.push(`Location ${location.name}: ${e}`);
+        const errMsg = `Location ${location.name}: ${e}`;
+        errors.push(errMsg);
+        logger.error('sync', `❌ Upload location exception: ${location.name}`, { error: String(e) });
+        await captureSyncError(e as Error, { userId, action: 'uploadLocations', locationName: location.name });
       }
     }
   } catch (error) {
@@ -472,16 +478,18 @@ async function uploadRecords(userId: string): Promise<{ count: number; errors: s
         });
 
         if (error) {
-  errors.push(`Record: ${error.message}`);
-  await captureSyncError(new Error(error.message), { userId, action: 'uploadRecords' });
-}  else {
+          errors.push(`Record: ${error.message}`);
+          logger.error('sync', `❌ Upload record failed`, { error: error.message, code: error.code, recordId: record.id });
+          await captureSyncError(new Error(error.message), { userId, action: 'uploadRecords' });
+        }  else {
           await markRecordSynced(record.id);
           count++;
         }
       } catch (e) {
-  errors.push(`Record: ${e}`);
-  await captureSyncError(e as Error, { userId, action: 'uploadRecords' });
-}
+        errors.push(`Record: ${e}`);
+        logger.error('sync', `❌ Upload record exception`, { error: String(e), recordId: record.id });
+        await captureSyncError(e as Error, { userId, action: 'uploadRecords' });
+      }
     }
   } catch (error) {
     errors.push(String(error));
@@ -668,6 +676,7 @@ async function downloadLocations(userId: string): Promise<{ count: number; error
 
     if (error) {
       errors.push(error.message);
+      logger.error('sync', `❌ Download locations failed`, { error: error.message, code: error.code });
       return { count, errors };
     }
 
@@ -682,6 +691,7 @@ async function downloadLocations(userId: string): Promise<{ count: number; error
         count++;
       } catch (e) {
         errors.push(`Location ${remote.name}: ${e}`);
+        logger.error('sync', `❌ Upsert location failed: ${remote.name}`, { error: String(e) });
       }
     }
 
@@ -694,12 +704,18 @@ const { locations, isMonitoring, startMonitoring } = useLocationStore.getState()
       if (locations.length > 0 && !isMonitoring) {
         logger.info('sync', '🚀 Starting monitoring after download...');
         setReconfiguring(true); // Abre janela
-await startMonitoring();
-// Reconcile será chamado automaticamente quando janela fechar
+        await startMonitoring();
+        
+        // Fecha janela após 1s para permitir eventos iniciais serem queued
+        setTimeout(() => {
+          setReconfiguring(false);
+          logger.debug('geofence', '🔓 Reconfigure window closed');
+        }, 1000);
       }
     }
   } catch (error) {
     errors.push(String(error));
+    logger.error('sync', `❌ Download locations exception`, { error: String(error) });
   }
 
   return { count, errors };
@@ -716,6 +732,7 @@ async function downloadRecords(userId: string): Promise<{ count: number; errors:
 
     if (error) {
       errors.push(error.message);
+      logger.error('sync', `❌ Download records failed`, { error: error.message, code: error.code });
       return { count, errors };
     }
 
@@ -731,10 +748,12 @@ async function downloadRecords(userId: string): Promise<{ count: number; errors:
         count++;
       } catch (e) {
         errors.push(`Record: ${e}`);
+        logger.error('sync', `❌ Upsert record failed`, { error: String(e), recordId: remote.id });
       }
     }
   } catch (error) {
     errors.push(String(error));
+    logger.error('sync', `❌ Download records exception`, { error: String(error) });
   }
 
   return { count, errors };

@@ -5,10 +5,11 @@
  * - Search addresses → coordinates (forward geocoding)
  * - Coordinates → address (reverse geocoding)
  * 
- * MODIFIED:
- * - Adds location bias (prioritizes results near GPS)
- * - Search with viewbox to limit geographic area
- * - Fixed: NodeJS.Timeout → ReturnType<typeof setTimeout>
+ * IMPROVED:
+ * - Smart search: tries local first, then expands
+ * - Country detection from GPS
+ * - Better proximity sorting
+ * - Fallback strategy for better results
  * 
  * 100% free, no API key needed
  */
@@ -21,9 +22,6 @@ const NOMINATIM_URL = 'https://nominatim.openstreetmap.org';
 // Required User-Agent (Nominatim policy)
 const USER_AGENT = 'OnSiteTimekeeper/1.0';
 
-// Default radius for location bias (in degrees, ~100km)
-const DEFAULT_BIAS_RADIUS = 1.0;
-
 // ============================================
 // TYPES
 // ============================================
@@ -35,6 +33,7 @@ export interface ResultadoGeocodificacao {
   cidade?: string;
   estado?: string;
   pais?: string;
+  distancia?: number; // Distance from bias point in km
 }
 
 export interface BuscaOptions {
@@ -42,8 +41,75 @@ export interface BuscaOptions {
   // Location bias - prioritizes results near these coordinates
   biasLatitude?: number;
   biasLongitude?: number;
-  // Bias radius in degrees (default ~100km)
-  biasRadius?: number;
+  // Country codes to search (e.g., ['ca', 'us'])
+  countryCodes?: string[];
+  // Search strategy
+  strategy?: 'local_first' | 'global';
+}
+
+// ============================================
+// COUNTRY DETECTION
+// ============================================
+
+/**
+ * Detect likely country codes based on coordinates
+ * Returns array of country codes to search
+ */
+function detectCountryCodes(latitude: number, longitude: number): string[] {
+  // North America bounding boxes (approximate)
+  const regions: { codes: string[]; minLat: number; maxLat: number; minLon: number; maxLon: number }[] = [
+    // Canada
+    { codes: ['ca'], minLat: 41.7, maxLat: 83.1, minLon: -141.0, maxLon: -52.6 },
+    // USA (continental)
+    { codes: ['us'], minLat: 24.5, maxLat: 49.4, minLon: -125.0, maxLon: -66.9 },
+    // Mexico
+    { codes: ['mx'], minLat: 14.5, maxLat: 32.7, minLon: -118.4, maxLon: -86.7 },
+    // UK
+    { codes: ['gb'], minLat: 49.9, maxLat: 60.8, minLon: -8.6, maxLon: 1.8 },
+    // Australia
+    { codes: ['au'], minLat: -43.6, maxLat: -10.7, minLon: 113.3, maxLon: 153.6 },
+    // Brazil
+    { codes: ['br'], minLat: -33.8, maxLat: 5.3, minLon: -73.9, maxLon: -34.8 },
+  ];
+
+  const detected: string[] = [];
+  
+  for (const region of regions) {
+    if (
+      latitude >= region.minLat && latitude <= region.maxLat &&
+      longitude >= region.minLon && longitude <= region.maxLon
+    ) {
+      detected.push(...region.codes);
+    }
+  }
+
+  // For border areas (e.g., Canada/US), include neighbors
+  if (detected.includes('ca') && latitude < 50) {
+    if (!detected.includes('us')) detected.push('us');
+  }
+  if (detected.includes('us') && latitude > 40) {
+    if (!detected.includes('ca')) detected.push('ca');
+  }
+
+  return detected.length > 0 ? detected : []; // Empty = no restriction
+}
+
+/**
+ * Calculate distance between two points in km (Haversine formula)
+ */
+function calcularDistanciaKm(
+  lat1: number, lon1: number,
+  lat2: number, lon2: number
+): number {
+  const R = 6371; // Earth's radius in km
+  const dLat = (lat2 - lat1) * Math.PI / 180;
+  const dLon = (lon2 - lon1) * Math.PI / 180;
+  const a = 
+    Math.sin(dLat / 2) * Math.sin(dLat / 2) +
+    Math.cos(lat1 * Math.PI / 180) * Math.cos(lat2 * Math.PI / 180) *
+    Math.sin(dLon / 2) * Math.sin(dLon / 2);
+  const c = 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
+  return R * c;
 }
 
 // ============================================
@@ -51,9 +117,65 @@ export interface BuscaOptions {
 // ============================================
 
 /**
- * Search addresses and return coordinates
- * @param query - Search text (address, place, etc.)
- * @param options - Search options (limit, location bias)
+ * Internal search function
+ */
+async function searchNominatim(
+  query: string,
+  options: {
+    limit: number;
+    viewbox?: string;
+    bounded?: boolean;
+    countryCodes?: string[];
+  }
+): Promise<ResultadoGeocodificacao[]> {
+  const params: Record<string, string> = {
+    q: query,
+    format: 'json',
+    limit: String(options.limit),
+    addressdetails: '1',
+  };
+
+  if (options.viewbox) {
+    params.viewbox = options.viewbox;
+    params.bounded = options.bounded ? '1' : '0';
+  }
+
+  if (options.countryCodes && options.countryCodes.length > 0) {
+    params.countrycodes = options.countryCodes.join(',');
+  }
+
+  const response = await fetch(
+    `${NOMINATIM_URL}/search?` + new URLSearchParams(params),
+    {
+      headers: {
+        'User-Agent': USER_AGENT,
+      },
+    }
+  );
+
+  if (!response.ok) {
+    throw new Error(`HTTP ${response.status}`);
+  }
+
+  const data = await response.json();
+
+  return data.map((item: any) => ({
+    latitude: parseFloat(item.lat),
+    longitude: parseFloat(item.lon),
+    endereco: item.display_name,
+    cidade: item.address?.city || item.address?.town || item.address?.village,
+    estado: item.address?.state,
+    pais: item.address?.country,
+  }));
+}
+
+/**
+ * Search addresses with smart strategy
+ * 
+ * Strategy:
+ * 1. First try bounded search in local area (~100km)
+ * 2. If few results, expand to country level
+ * 3. Sort all results by distance from user
  */
 export async function buscarEndereco(
   query: string,
@@ -66,77 +188,105 @@ export async function buscarEndereco(
       : options;
     
     const limite = opts.limite ?? 5;
+    const strategy = opts.strategy ?? 'local_first';
 
     if (!query || query.length < 3) {
       return [];
     }
 
-    logger.debug('gps', `🔍 Searching address: "${query}"`, {
-      bias: opts.biasLatitude ? `${opts.biasLatitude.toFixed(4)},${opts.biasLongitude?.toFixed(4)}` : 'none'
+    const hasLocation = opts.biasLatitude !== undefined && opts.biasLongitude !== undefined;
+
+    logger.debug('gps', `🔍 Searching: "${query}"`, {
+      bias: hasLocation ? `${opts.biasLatitude!.toFixed(4)},${opts.biasLongitude!.toFixed(4)}` : 'none',
+      strategy,
     });
 
-    // Base parameters
-    const params: Record<string, string> = {
-      q: query,
-      format: 'json',
-      limit: String(limite),
-      addressdetails: '1',
-    };
+    let resultados: ResultadoGeocodificacao[] = [];
 
-    // If location bias exists, add viewbox to prioritize area
-    if (opts.biasLatitude !== undefined && opts.biasLongitude !== undefined) {
-      const radius = opts.biasRadius ?? DEFAULT_BIAS_RADIUS;
+    if (hasLocation && strategy === 'local_first') {
+      // Detect country codes from GPS
+      const detectedCountries = opts.countryCodes ?? detectCountryCodes(opts.biasLatitude!, opts.biasLongitude!);
       
-      // Viewbox: left,top,right,bottom (minLon,maxLat,maxLon,minLat)
-      const minLon = opts.biasLongitude - radius;
-      const maxLon = opts.biasLongitude + radius;
-      const minLat = opts.biasLatitude - radius;
-      const maxLat = opts.biasLatitude + radius;
-      
-      params.viewbox = `${minLon},${maxLat},${maxLon},${minLat}`;
-      params.bounded = '0'; // Don't strictly limit, just prioritize
-    }
+      // Create viewbox (~100km around user)
+      const radiusDeg = 1.0; // ~100km
+      const viewbox = [
+        opts.biasLongitude! - radiusDeg, // minLon (left)
+        opts.biasLatitude! + radiusDeg,  // maxLat (top)
+        opts.biasLongitude! + radiusDeg, // maxLon (right)
+        opts.biasLatitude! - radiusDeg,  // minLat (bottom)
+      ].join(',');
 
-    const response = await fetch(
-      `${NOMINATIM_URL}/search?` + new URLSearchParams(params),
-      {
-        headers: {
-          'User-Agent': USER_AGENT,
-        },
-      }
-    );
-
-    if (!response.ok) {
-      throw new Error(`HTTP ${response.status}`);
-    }
-
-    const data = await response.json();
-
-    let resultados: ResultadoGeocodificacao[] = data.map((item: any) => ({
-      latitude: parseFloat(item.lat),
-      longitude: parseFloat(item.lon),
-      endereco: item.display_name,
-      cidade: item.address?.city || item.address?.town || item.address?.village,
-      estado: item.address?.state,
-      pais: item.address?.country,
-    }));
-
-    // If bias exists, sort by distance from reference point
-    if (opts.biasLatitude !== undefined && opts.biasLongitude !== undefined) {
-      resultados = resultados.sort((a, b) => {
-        const distA = calcularDistanciaSimples(
-          opts.biasLatitude!, opts.biasLongitude!,
-          a.latitude, a.longitude
-        );
-        const distB = calcularDistanciaSimples(
-          opts.biasLatitude!, opts.biasLongitude!,
-          b.latitude, b.longitude
-        );
-        return distA - distB;
+      // Step 1: Try bounded local search first
+      logger.debug('gps', '📍 Trying local bounded search...');
+      resultados = await searchNominatim(query, {
+        limit: limite,
+        viewbox,
+        bounded: true,
+        countryCodes: detectedCountries,
       });
+
+      // Step 2: If not enough results, try unbounded with country filter
+      if (resultados.length < 3) {
+        logger.debug('gps', '🌍 Expanding to country-level search...');
+        const moreResults = await searchNominatim(query, {
+          limit: limite,
+          viewbox,
+          bounded: false,
+          countryCodes: detectedCountries,
+        });
+        
+        // Merge results, avoiding duplicates
+        const existingCoords = new Set(resultados.map(r => `${r.latitude.toFixed(5)},${r.longitude.toFixed(5)}`));
+        for (const r of moreResults) {
+          const key = `${r.latitude.toFixed(5)},${r.longitude.toFixed(5)}`;
+          if (!existingCoords.has(key)) {
+            resultados.push(r);
+            existingCoords.add(key);
+          }
+        }
+      }
+
+      // Step 3: If still not enough and we had country restriction, try without
+      if (resultados.length < 2 && detectedCountries.length > 0) {
+        logger.debug('gps', '🌐 Trying global search...');
+        const globalResults = await searchNominatim(query, {
+          limit: limite,
+          viewbox,
+          bounded: false,
+          // No country restriction
+        });
+
+        const existingCoords = new Set(resultados.map(r => `${r.latitude.toFixed(5)},${r.longitude.toFixed(5)}`));
+        for (const r of globalResults) {
+          const key = `${r.latitude.toFixed(5)},${r.longitude.toFixed(5)}`;
+          if (!existingCoords.has(key)) {
+            resultados.push(r);
+            existingCoords.add(key);
+          }
+        }
+      }
+
+      // Add distance to each result and sort by distance
+      resultados = resultados.map(r => ({
+        ...r,
+        distancia: calcularDistanciaKm(opts.biasLatitude!, opts.biasLongitude!, r.latitude, r.longitude),
+      }));
+
+      resultados.sort((a, b) => (a.distancia ?? Infinity) - (b.distancia ?? Infinity));
+
+    } else {
+      // No location bias - simple global search
+      resultados = await searchNominatim(query, { limit: limite });
     }
 
-    logger.info('gps', `✅ ${resultados.length} result(s) found`);
+    // Limit final results
+    resultados = resultados.slice(0, limite);
+
+    const closestDist = resultados[0]?.distancia;
+    logger.info('gps', `✅ ${resultados.length} result(s)`, {
+      closest: closestDist ? `${closestDist.toFixed(1)}km` : 'n/a',
+    });
+
     return resultados;
   } catch (error) {
     logger.error('gps', 'Error searching address', { error: String(error) });
@@ -146,7 +296,7 @@ export async function buscarEndereco(
 
 /**
  * Search addresses with autocomplete (for use with debounce)
- * Returns results faster, prioritizing local area
+ * Uses smart local-first strategy
  */
 export async function buscarEnderecoAutocomplete(
   query: string,
@@ -154,10 +304,10 @@ export async function buscarEnderecoAutocomplete(
   biasLongitude?: number
 ): Promise<ResultadoGeocodificacao[]> {
   return buscarEndereco(query, {
-    limite: 5,
+    limite: 6,
     biasLatitude,
     biasLongitude,
-    biasRadius: 0.5, // ~50km for autocomplete (more restricted)
+    strategy: 'local_first',
   });
 }
 
@@ -167,8 +317,6 @@ export async function buscarEnderecoAutocomplete(
 
 /**
  * Get address from coordinates
- * @param latitude - Point latitude
- * @param longitude - Point longitude
  */
 export async function obterEndereco(
   latitude: number,
@@ -261,26 +409,13 @@ export async function obterDetalhesEndereco(
 // ============================================
 
 /**
- * Calculate simple distance between two points (fast approximation)
- * Uses Euclidean formula for sorting - doesn't need to be exact
- */
-function calcularDistanciaSimples(
-  lat1: number, lon1: number,
-  lat2: number, lon2: number
-): number {
-  const dLat = lat2 - lat1;
-  const dLon = lon2 - lon1;
-  return Math.sqrt(dLat * dLat + dLon * dLon);
-}
-
-/**
  * Format address for short display
- * Ex: "123 Main St - Downtown, Toronto"
+ * Ex: "123 Main St, Downtown, Toronto"
  */
 export function formatarEnderecoResumido(endereco: string): string {
   if (!endereco) return '';
 
-  // Get only the first 2-3 components
+  // Get only the first 3 components
   const partes = endereco.split(', ');
   if (partes.length <= 3) return endereco;
 
@@ -288,9 +423,22 @@ export function formatarEnderecoResumido(endereco: string): string {
 }
 
 /**
+ * Format address with distance
+ * Ex: "123 Main St, Toronto (2.5 km)"
+ */
+export function formatarEnderecoComDistancia(resultado: ResultadoGeocodificacao): string {
+  const base = formatarEnderecoResumido(resultado.endereco);
+  if (resultado.distancia !== undefined) {
+    if (resultado.distancia < 1) {
+      return `${base} (${Math.round(resultado.distancia * 1000)}m)`;
+    }
+    return `${base} (${resultado.distancia.toFixed(1)}km)`;
+  }
+  return base;
+}
+
+/**
  * Create debounce function for autocomplete
- * 
- * FIX: Uses portable ReturnType<typeof setTimeout> instead of NodeJS.Timeout
  */
 export function criarDebounce<T extends (...args: any[]) => any>(
   fn: T,

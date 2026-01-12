@@ -34,6 +34,7 @@
         "backgroundColor": "#0B0D10"
       },
       "package": "com.onsiteclub.timekeeper",
+      "allowBackup": false,
       "config": {
         "googleMaps": {
           "apiKey": "AIzaSyBdITLu3Kr5OYPr8ZnhxIGVNFHIGEgvfKY"

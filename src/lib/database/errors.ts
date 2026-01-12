@@ -6,6 +6,7 @@
  * - Stack traces
  * - Context (what user was doing)
  * - Device/app metadata
+ * - Ping-pong event tracking (geofence boundary oscillation)
  */
 
 import { Platform } from 'react-native';
@@ -34,7 +35,11 @@ export type ErrorType =
   | 'permission_error'
   | 'validation_error'
   | 'runtime_error'
-  | 'unknown_error';
+  | 'pingpong_event'
+  | 'pingpong_warning'
+  | 'unknown_error'
+  | 'foreground_service_killed';
+
 
 export interface ErrorContext {
   screen?: string;
@@ -43,6 +48,29 @@ export interface ErrorContext {
   sessionId?: string;
   userId?: string;
   additionalData?: Record<string, unknown>;
+  locationName?: string;
+  platform?: string;
+  timestamp?: string;
+  isMonitoring?: boolean;
+}
+
+
+// Ping-pong specific data structure
+export interface PingPongEventData {
+  eventType: 'enter' | 'exit' | 'check';
+  source: 'geofence' | 'heartbeat' | 'reconcile' | 'manual';
+  fenceId: string;
+  fenceName: string;
+  distance: number;
+  radius: number;
+  effectiveRadius: number;
+  margin: number;
+  marginPercent: number;
+  isInside: boolean;
+  gpsAccuracy?: number;
+  isPingPonging?: boolean;
+  recentEnters?: number;
+  recentExits?: number;
 }
 
 // ============================================
@@ -108,6 +136,181 @@ export async function captureError(
     // Don't throw if error logging fails
     logger.error('database', 'Failed to capture error', { error: String(logError) });
     return id;
+  }
+}
+
+// ============================================
+// PING-PONG EVENT TRACKING
+// ============================================
+
+/**
+ * Capture a ping-pong event (geofence boundary oscillation tracking)
+ * This helps debug GPS jitter and fence boundary issues
+ */
+export async function capturePingPongEvent(
+  userId: string,
+  data: PingPongEventData
+): Promise<string> {
+  const id = generateUUID();
+  const timestamp = now();
+  
+  try {
+    // Determine if this is a warning (low margin or actual ping-pong)
+    const isWarning = data.isPingPonging || data.marginPercent < 15 || (data.gpsAccuracy && data.gpsAccuracy > 30);
+    const type: ErrorType = isWarning ? 'pingpong_warning' : 'pingpong_event';
+    
+    // Build descriptive message
+    const message = `${data.eventType.toUpperCase()} @ ${data.fenceName} | ` +
+      `dist: ${data.distance.toFixed(1)}m | ` +
+      `radius: ${data.radius}m (eff: ${data.effectiveRadius.toFixed(1)}m) | ` +
+      `margin: ${data.margin.toFixed(1)}m (${data.marginPercent.toFixed(1)}%) | ` +
+      `GPS: ${data.gpsAccuracy ? data.gpsAccuracy.toFixed(1) + 'm' : 'N/A'}` +
+      (data.isPingPonging ? ' | 🔴 PING-PONG!' : '');
+    
+    const metadata = {
+      app_version: Application.nativeApplicationVersion || 'unknown',
+      os: Platform.OS,
+      os_version: String(Platform.Version),
+      device_model: Device.modelName || 'unknown',
+    };
+    
+    db.runSync(
+      `INSERT INTO error_log 
+       (id, user_id, error_type, error_message, error_stack, error_context, 
+        app_version, os, os_version, device_model, occurred_at, created_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      [
+        id,
+        userId,
+        type,
+        message,
+        null, // No stack trace for events
+        JSON.stringify(data),
+        metadata.app_version,
+        metadata.os,
+        metadata.os_version,
+        metadata.device_model,
+        timestamp,
+        timestamp,
+      ]
+    );
+    
+    // Log to console as well
+    if (isWarning) {
+      logger.warn('pingpong', `🔴 ${message}`);
+    } else {
+      logger.debug('pingpong', `📍 ${message}`);
+    }
+    
+    return id;
+  } catch (logError) {
+    logger.error('database', 'Failed to capture ping-pong event', { error: String(logError) });
+    return id;
+  }
+}
+
+/**
+ * Get ping-pong events from error_log for analysis
+ */
+export function getPingPongEvents(
+  userId?: string,
+  limit: number = 100
+): PingPongEventData[] {
+  try {
+    const query = userId
+      ? `SELECT error_context FROM error_log 
+         WHERE error_type IN ('pingpong_event', 'pingpong_warning') AND user_id = ? 
+         ORDER BY occurred_at DESC LIMIT ?`
+      : `SELECT error_context FROM error_log 
+         WHERE error_type IN ('pingpong_event', 'pingpong_warning') 
+         ORDER BY occurred_at DESC LIMIT ?`;
+    
+    const params = userId ? [userId, limit] : [limit];
+    const rows = db.getAllSync<{ error_context: string }>(query, params);
+    
+    return rows
+      .map(row => {
+        try {
+          return JSON.parse(row.error_context) as PingPongEventData;
+        } catch {
+          return null;
+        }
+      })
+      .filter((data): data is PingPongEventData => data !== null);
+  } catch (error) {
+    logger.error('database', 'Error fetching ping-pong events', { error: String(error) });
+    return [];
+  }
+}
+
+/**
+ * Get ping-pong statistics from error_log
+ */
+export function getPingPongStats(userId?: string): {
+  totalEvents: number;
+  warnings: number;
+  enters: number;
+  exits: number;
+  checks: number;
+  avgMarginPercent: number;
+  avgGpsAccuracy: number;
+  pingPongCount: number;
+} {
+  try {
+    const userFilter = userId ? 'AND user_id = ?' : '';
+    const params = userId ? [userId] : [];
+    
+    // Get counts
+    const totalRow = db.getFirstSync<{ count: number }>(
+      `SELECT COUNT(*) as count FROM error_log WHERE error_type IN ('pingpong_event', 'pingpong_warning') ${userFilter}`,
+      params
+    );
+    
+    const warningRow = db.getFirstSync<{ count: number }>(
+      `SELECT COUNT(*) as count FROM error_log WHERE error_type = 'pingpong_warning' ${userFilter}`,
+      params
+    );
+    
+    // Get events for detailed stats
+    const events = getPingPongEvents(userId, 500);
+    
+    const enters = events.filter(e => e.eventType === 'enter').length;
+    const exits = events.filter(e => e.eventType === 'exit').length;
+    const checks = events.filter(e => e.eventType === 'check').length;
+    const pingPongCount = events.filter(e => e.isPingPonging).length;
+    
+    const marginsWithValue = events.filter(e => e.marginPercent !== undefined);
+    const avgMarginPercent = marginsWithValue.length > 0
+      ? marginsWithValue.reduce((sum, e) => sum + e.marginPercent, 0) / marginsWithValue.length
+      : 0;
+    
+    const accuraciesWithValue = events.filter(e => e.gpsAccuracy !== undefined && e.gpsAccuracy !== null);
+    const avgGpsAccuracy = accuraciesWithValue.length > 0
+      ? accuraciesWithValue.reduce((sum, e) => sum + (e.gpsAccuracy || 0), 0) / accuraciesWithValue.length
+      : 0;
+    
+    return {
+      totalEvents: totalRow?.count || 0,
+      warnings: warningRow?.count || 0,
+      enters,
+      exits,
+      checks,
+      avgMarginPercent: Math.round(avgMarginPercent * 10) / 10,
+      avgGpsAccuracy: Math.round(avgGpsAccuracy * 10) / 10,
+      pingPongCount,
+    };
+  } catch (error) {
+    logger.error('database', 'Error getting ping-pong stats', { error: String(error) });
+    return {
+      totalEvents: 0,
+      warnings: 0,
+      enters: 0,
+      exits: 0,
+      checks: 0,
+      avgMarginPercent: 0,
+      avgGpsAccuracy: 0,
+      pingPongCount: 0,
+    };
   }
 }
 
@@ -302,17 +505,20 @@ export async function getErrorStats(userId?: string): Promise<ErrorStats> {
     );
     
     const byType: Record<ErrorType, number> = {
-      sync_error: 0,
-      database_error: 0,
-      network_error: 0,
-      geofence_error: 0,
-      notification_error: 0,
-      auth_error: 0,
-      permission_error: 0,
-      validation_error: 0,
-      runtime_error: 0,
-      unknown_error: 0,
-    };
+    sync_error: 0,
+    database_error: 0,
+    network_error: 0,
+    geofence_error: 0,
+    notification_error: 0,
+    auth_error: 0,
+    permission_error: 0,
+    validation_error: 0,
+    runtime_error: 0,
+    unknown_error: 0,
+    pingpong_event: 0,
+    pingpong_warning: 0,
+    foreground_service_killed: 0,
+  };
     
     byTypeRows.forEach(row => {
       byType[row.error_type] = row.count;
@@ -331,10 +537,20 @@ export async function getErrorStats(userId?: string): Promise<ErrorStats> {
       total: 0,
       today: 0,
       pending: 0,
-      byType: {
-        sync_error: 0, database_error: 0, network_error: 0, geofence_error: 0,
-        notification_error: 0, auth_error: 0, permission_error: 0,
-        validation_error: 0, runtime_error: 0, unknown_error: 0,
+     byType: {
+        sync_error: 0,
+        database_error: 0,
+        network_error: 0,
+        geofence_error: 0,
+        notification_error: 0,
+        auth_error: 0,
+        permission_error: 0,
+        validation_error: 0,
+        runtime_error: 0,
+        unknown_error: 0,
+        pingpong_event: 0,
+        pingpong_warning: 0,
+        foreground_service_killed: 0,
       },
       lastOccurred: null,
     };

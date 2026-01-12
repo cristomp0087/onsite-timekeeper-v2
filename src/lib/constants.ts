@@ -3,10 +3,13 @@
  * 
  * Constants shared between location.ts and backgroundTasks.ts
  * to avoid require cycles.
+ * 
+ * FIX: LOCATION_TASK_NAME must match the task defined in backgroundTasks.ts
  */
 
 // Background task names (must be unique and match across files)
-export const LOCATION_TASK_NAME = 'onsite-background-location';
+// FIXED: Was 'onsite-background-location', must match backgroundTasks.ts
+export const LOCATION_TASK_NAME = 'onsite-location-task';
 export const GEOFENCE_TASK_NAME = 'onsite-geofence';
 export const HEARTBEAT_TASK_NAME = 'onsite-heartbeat-task';
 

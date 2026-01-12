@@ -1,8 +1,8 @@
 /**
  * Root Layout - OnSite Timekeeper v2
  * 
- * SIMPLIFIED: No fullscreen popup (GeofenceAlert removed)
- * UPDATED: Added notification response handler for report reminders
+ * UPDATED: Integrated singleton bootstrap for listeners
+ * FIX: Added initialization lock to prevent boot loop
  */
 
 import React, { useEffect, useState, useRef } from 'react';
@@ -30,6 +30,12 @@ import {
   scheduleRemindLater,
   configureNotificationCategories,
 } from '../src/lib/notifications';
+import {
+  initializeListeners,
+  cleanupListeners,
+  onUserLogin,
+  onUserLogout,
+} from '../src/lib/bootstrap';
 import type { GeofenceNotificationData } from '../src/lib/notifications';
 
 SplashScreen.preventAutoHideAsync();
@@ -42,30 +48,51 @@ export default function RootLayout() {
 
   const isAuthenticated = useAuthStore(s => s.isAuthenticated());
   const authLoading = useAuthStore(s => s.isLoading);
+  const user = useAuthStore(s => s.user);
   const initAuth = useAuthStore(s => s.initialize);
   
+  // Refs for singleton control
   const initRef = useRef(false);
+  const userSessionRef = useRef<string | null>(null);
   const notificationListenerRef = useRef<Notifications.Subscription | null>(null);
+  
+  // FIX: Lock to prevent initialization loop
+  const storesInitInProgress = useRef(false);
 
   // ============================================
   // STORE INITIALIZATION
   // ============================================
 
   const initializeStores = async () => {
-    if (storesInitialized) return;
+    // Double-check both state and ref
+    if (storesInitialized || storesInitInProgress.current) {
+      logger.debug('boot', '⚠️ Stores init skipped (already done or in progress)');
+      return;
+    }
+    
+    // LOCK IMMEDIATELY before any async operation
+    storesInitInProgress.current = true;
     
     logger.info('boot', '📦 Initializing stores...');
     
     try {
+      // Initialize record store first (loads data)
+      logger.info('boot', '📝 Initializing record store...');
       await useRecordStore.getState().initialize();
+      logger.info('boot', '✅ Record store initialized');
+      
+      // Location store (permissions + geofencing)
       await useLocationStore.getState().initialize();
-      await useWorkSessionStore.getState().initialize();
+      
+      // Sync store
       await useSyncStore.getState().initialize();
       
       setStoresInitialized(true);
       logger.info('boot', '✅ Stores initialized');
     } catch (error) {
       logger.error('boot', 'Error initializing stores', { error: String(error) });
+      // Reset lock on error so retry is possible
+      storesInitInProgress.current = false;
     }
   };
 
@@ -85,26 +112,22 @@ export default function RootLayout() {
     // Handle report reminder notifications
     if (data?.type === 'report_reminder') {
       if (actionIdentifier === 'send_now' || actionIdentifier === Notifications.DEFAULT_ACTION_IDENTIFIER) {
-        // User clicked [Send Now] or tapped the notification
         logger.info('notification', '📤 Report reminder: Send Now');
 
-        // Set pending export flag with period data
-        useSettingsStore.getState().setPendingReportExport({
-          periodStart: data.periodStart,
-          periodEnd: data.periodEnd,
-        });
-
-        // Navigate to home tab
+        if (data?.periodStart && data?.periodEnd) {
+          useSettingsStore.getState().setPendingReportExport({
+            periodStart: data.periodStart,
+            periodEnd: data.periodEnd,
+          });
+        }
         router.push('/');
 
-        // Reschedule next reminder
         const { reportReminder } = useSettingsStore.getState();
         if (reportReminder.enabled) {
           await scheduleReportReminder(reportReminder);
         }
 
       } else if (actionIdentifier === 'remind_later') {
-        // User clicked [Later] - schedule reminder for 1 hour
         logger.info('notification', '⏰ Report reminder: Later');
         await scheduleRemindLater();
       }
@@ -112,7 +135,7 @@ export default function RootLayout() {
   };
 
   // ============================================
-  // BOOTSTRAP
+  // BOOTSTRAP (runs once)
   // ============================================
 
   useEffect(() => {
@@ -123,18 +146,33 @@ export default function RootLayout() {
       logger.info('boot', '🚀 Starting OnSite Timekeeper v2...');
 
       try {
+        // 1. Database
         await initDatabase();
         logger.info('boot', '✅ Database initialized');
 
+        // 2. Settings
         await useSettingsStore.getState().loadSettings();
 
-        // Configure notification categories
+        // 3. Notification categories
         await configureNotificationCategories();
 
-        await initAuth();
+        // 4. SINGLETON LISTENERS (AppState, geofence callback, heartbeat)
+        await initializeListeners();
 
+        // 5. Auth
+        logger.info('boot', '🔐 Initializing auth store V2...');
+        await initAuth();
+        logger.info('boot', '✅ Auth store V2 initialized');
+
+        // 6. If authenticated, init stores + user session
         if (useAuthStore.getState().isAuthenticated()) {
           await initializeStores();
+          
+          const currentUser = useAuthStore.getState().user;
+          if (currentUser) {
+            await onUserLogin(currentUser.id);
+            userSessionRef.current = currentUser.id;
+          }
           
           // Schedule report reminder if enabled
           const { reportReminder } = useSettingsStore.getState();
@@ -153,6 +191,11 @@ export default function RootLayout() {
     }
 
     bootstrap();
+
+    // Cleanup on unmount (app close)
+    return () => {
+      cleanupListeners();
+    };
   }, []);
 
   // ============================================
@@ -160,12 +203,10 @@ export default function RootLayout() {
   // ============================================
 
   useEffect(() => {
-    // Set up notification response listener
     notificationListenerRef.current = Notifications.addNotificationResponseReceivedListener(
       handleNotificationResponse
     );
 
-    // Check for notification that launched the app
     Notifications.getLastNotificationResponseAsync().then(response => {
       if (response) {
         handleNotificationResponse(response);
@@ -183,13 +224,38 @@ export default function RootLayout() {
   // AUTH STATE EFFECTS
   // ============================================
 
+  // Handle login (stores init + user session)
+  // FIX: Removed 'user' from dependencies to prevent loop
   useEffect(() => {
-    if (isReady && isAuthenticated && !storesInitialized) {
-      logger.info('boot', '🔑 Login detected - initializing stores...');
-      initializeStores();
+    if (!isReady || !isAuthenticated || storesInitialized || storesInitInProgress.current) {
+      return;
     }
-  }, [isReady, isAuthenticated, storesInitialized]);
+    
+    logger.info('boot', '🔑 Login detected - initializing stores...');
+    
+    initializeStores().then(async () => {
+      // Get user fresh from store after init completes
+      const currentUser = useAuthStore.getState().user;
+      if (currentUser && userSessionRef.current !== currentUser.id) {
+        await onUserLogin(currentUser.id);
+        userSessionRef.current = currentUser.id;
+      }
+    });
+  }, [isReady, isAuthenticated, storesInitialized]); // FIX: Removed 'user' dependency
 
+  // Handle logout
+  useEffect(() => {
+    if (isReady && !isAuthenticated && userSessionRef.current) {
+      logger.info('boot', '🚪 Logout detected - cleaning up...');
+      onUserLogout().then(() => {
+        userSessionRef.current = null;
+        setStoresInitialized(false);
+        storesInitInProgress.current = false; // Reset lock for next login
+      });
+    }
+  }, [isReady, isAuthenticated]);
+
+  // Navigation guard
   useEffect(() => {
     if (!isReady || authLoading) return;
 

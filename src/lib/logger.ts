@@ -3,7 +3,7 @@
  * 
  * - Colored logs in console (dev)
  * - Listeners for DevMonitor
- * - Queue for Supabase upload (optional)
+ * - PRIVACY: Masks emails and GPS coords in production
  */
 
 type LogLevel = 'debug' | 'info' | 'warn' | 'error';
@@ -18,9 +18,14 @@ type LogCategory =
   | 'ui'
   | 'boot'
   | 'heartbeat'   
-  | 'record'      // English version
+  | 'record'
   | 'registro'    // Legacy (Portuguese)
-  | 'telemetry';
+  | 'telemetry'
+  | 'ttl'
+  | 'pingpong'
+  | 'permissions'
+  | 'settings';
+
 
 export interface LogEntry {
   id: string;
@@ -36,6 +41,8 @@ const CONFIG = {
   enableConsole: __DEV__,
   maxStoredLogs: 500,
   enableColors: true,
+  // PRIVACY: Always mask sensitive data (even in dev)
+  showSensitiveData: false,
 };
 
 // Emojis per level
@@ -46,21 +53,24 @@ const levelEmoji: Record<LogLevel, string> = {
   error: '🔴',
 };
 
-// Colors per category (for console)
 const categoryColor: Record<LogCategory, string> = {
-  auth: '\x1b[35m',       // magenta
-  gps: '\x1b[36m',        // cyan
-  geofence: '\x1b[33m',   // yellow
-  sync: '\x1b[34m',       // blue
-  database: '\x1b[32m',   // green
+  auth: '\x1b[35m',        // magenta
+  gps: '\x1b[36m',         // cyan
+  geofence: '\x1b[33m',    // yellow
+  sync: '\x1b[34m',        // blue
+  database: '\x1b[32m',    // green
   notification: '\x1b[31m', // red
-  session: '\x1b[95m',    // light magenta
-  ui: '\x1b[94m',         // light blue
-  boot: '\x1b[96m',       // light cyan
-  heartbeat: '\x1b[93m',  // light yellow
-  record: '\x1b[92m',     // light green (English)
-  registro: '\x1b[92m',   // light green (Legacy)
-  telemetry: '\x1b[90m',  // gray
+  session: '\x1b[95m',     // light magenta
+  ui: '\x1b[94m',          // light blue
+  boot: '\x1b[96m',        // light cyan
+  heartbeat: '\x1b[93m',   // light yellow
+  record: '\x1b[92m',      // light green
+  registro: '\x1b[92m',    // light green (Legacy)
+  telemetry: '\x1b[90m',   // gray
+  ttl: '\x1b[93m',         // light yellow
+  pingpong: '\x1b[95m',    // light magenta
+  permissions: '\x1b[36m', // cyan
+  settings: '\x1b[37m',    // white
 };
 
 // In-memory log storage
@@ -69,6 +79,95 @@ const logStorage: LogEntry[] = [];
 // Listeners for DevMonitor
 type LogListener = (entry: LogEntry) => void;
 const listeners: Set<LogListener> = new Set();
+
+// ============================================
+// PRIVACY HELPERS
+// ============================================
+
+/**
+ * Mask email address for privacy
+ * cristony.bruno@gmail.com → c******@gmail.com
+ */
+function maskEmail(email: string): string {
+  if (!email || !email.includes('@')) return email;
+  const [local, domain] = email.split('@');
+  if (local.length <= 1) return `*@${domain}`;
+  return `${local[0]}******@${domain}`;
+}
+
+/**
+ * Mask GPS coordinates for privacy
+ * Returns only accuracy, not exact position
+ */
+function maskCoordinates(lat: number | string, lng: number | string, accuracy?: number | string): string {
+  if (CONFIG.showSensitiveData) {
+    return `lat:${lat}, lng:${lng}, acc:${accuracy ?? '?'}m`;
+  }
+  return `[GPS hidden] acc:${accuracy ?? '?'}m`;
+}
+
+/**
+ * Sanitize metadata object - remove or mask sensitive fields
+ */
+function sanitizeMetadata(metadata: Record<string, unknown> | undefined): Record<string, unknown> | undefined {
+  if (!metadata) return undefined;
+  if (CONFIG.showSensitiveData) return metadata;
+
+  const sanitized: Record<string, unknown> = {};
+  
+  for (const [key, value] of Object.entries(metadata)) {
+    const keyLower = key.toLowerCase();
+    
+    // Mask email fields
+    if (keyLower.includes('email') && typeof value === 'string') {
+      sanitized[key] = maskEmail(value);
+      continue;
+    }
+    
+    // Mask coordinate fields
+    if ((keyLower === 'lat' || keyLower === 'latitude') && typeof value !== 'undefined') {
+      sanitized[key] = '[hidden]';
+      continue;
+    }
+    if ((keyLower === 'lng' || keyLower === 'longitude') && typeof value !== 'undefined') {
+      sanitized[key] = '[hidden]';
+      continue;
+    }
+    
+    // Mask userId (show only first 8 chars)
+    if (keyLower === 'userid' && typeof value === 'string') {
+      sanitized[key] = value.length > 8 ? `${value.substring(0, 8)}...` : value;
+      continue;
+    }
+    
+    // Keep other fields as-is
+    sanitized[key] = value;
+  }
+  
+  return sanitized;
+}
+
+/**
+ * Sanitize log message - mask inline sensitive data
+ */
+function sanitizeMessage(message: string): string {
+  if (CONFIG.showSensitiveData) return message;
+  
+  // Mask email patterns in message
+  const emailPattern = /[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}/g;
+  let sanitized = message.replace(emailPattern, (email) => maskEmail(email));
+  
+  // Mask coordinate patterns like "45.375171" (6+ decimal digits after dot)
+  // Only if it looks like a coordinate (between -180 and 180)
+  const coordPattern = /-?\d{1,3}\.\d{5,}/g;
+  sanitized = sanitized.replace(coordPattern, '[coord]');
+  
+  return sanitized;
+}
+
+// ============================================
+// CORE LOGGING
+// ============================================
 
 /**
  * Generate simple UUID for logs
@@ -108,12 +207,16 @@ function log(
   message: string,
   metadata?: Record<string, unknown>
 ): void {
+  // Sanitize for privacy
+  const safeMessage = sanitizeMessage(message);
+  const safeMetadata = sanitizeMetadata(metadata);
+
   const entry: LogEntry = {
     id: generateLogId(),
     level,
     category,
-    message,
-    metadata,
+    message: safeMessage,
+    metadata: safeMetadata,
     timestamp: new Date(),
   };
 
@@ -130,9 +233,9 @@ function log(
     const reset = CONFIG.enableColors ? '\x1b[0m' : '';
     const time = entry.timestamp.toLocaleTimeString('en-US');
     
-    const metaStr = metadata ? ` ${JSON.stringify(metadata)}` : '';
+    const metaStr = safeMetadata ? ` ${JSON.stringify(safeMetadata)}` : '';
     console.log(
-      `${emoji} ${color}[${time}][${category.toUpperCase()}]${reset} ${message}${metaStr}`
+      `${emoji} ${color}[${time}][${category.toUpperCase()}]${reset} ${safeMessage}${metaStr}`
     );
   }
 
@@ -156,6 +259,10 @@ export const logger = {
   error: (category: LogCategory, message: string, metadata?: Record<string, unknown>) =>
     log('error', category, message, metadata),
 };
+
+// ============================================
+// LOG RETRIEVAL
+// ============================================
 
 /**
  * Return all stored logs

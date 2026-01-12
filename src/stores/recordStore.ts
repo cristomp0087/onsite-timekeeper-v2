@@ -531,7 +531,7 @@ const id = generateUUID();
       }
 
       // Insert complete record (with entry and exit)
-      db.runSync(
+      const result = db.runSync(
         `INSERT INTO records (
           id, user_id, location_id, location_name, entry_at, exit_at, 
           type, manually_edited, edit_reason, pause_minutes, synced_at
@@ -549,6 +549,12 @@ const id = generateUUID();
           pauseMinutes || 0,
         ]
       );
+
+      // Verify INSERT succeeded
+      if (result.changes === 0) {
+        logger.error('record', '❌ Manual record INSERT failed - no rows affected', { id, locationName });
+        throw new Error('Failed to insert record');
+      }
 
       logger.info('record', `✏️ Manual record created: ${id}`, { locationName, entry, exit, pauseMinutes, absenceType });
 

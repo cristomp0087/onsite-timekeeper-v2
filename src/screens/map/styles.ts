@@ -158,40 +158,33 @@ export const styles = StyleSheet.create({
   },
 
   // ============================================
-  // LOCATIONS LIST (chips)
+  // LOCATION LABELS (on map)
   // ============================================
-  locationsList: {
-    position: 'absolute',
-    bottom: 24,
-    left: 0,
-    right: 0,
-  },
-  locationChip: {
+  locationLabel: {
     flexDirection: 'row',
     alignItems: 'center',
     backgroundColor: colors.card,
-    paddingVertical: 8,
-    paddingHorizontal: 12,
-    borderRadius: 20,
-    marginLeft: 12,
-    borderWidth: 2,
+    paddingVertical: 6,
+    paddingHorizontal: 10,
+    borderRadius: 16,
     shadowColor: colors.black,
-    shadowOffset: { width: 0, height: 1 },
-    shadowOpacity: 0.1,
-    shadowRadius: 2,
-    elevation: 2,
+    shadowOffset: { width: 0, height: 2 },
+    shadowOpacity: 0.2,
+    shadowRadius: 3,
+    elevation: 4,
+    maxWidth: 140,
   },
-  locationChipDot: {
-    width: 10,
-    height: 10,
-    borderRadius: 5,
-    marginRight: 8,
+  locationLabelDot: {
+    width: 8,
+    height: 8,
+    borderRadius: 4,
+    marginRight: 6,
   },
-  locationChipText: {
-    fontSize: 13,
-    fontWeight: '500',
+  locationLabelText: {
+    fontSize: 12,
+    fontWeight: '600',
     color: colors.text,
-    maxWidth: 100,
+    flexShrink: 1,
   },
 
   // ============================================
@@ -339,65 +332,6 @@ export const styles = StyleSheet.create({
     fontSize: 15,
     fontWeight: '600',
     color: colors.error,
-  },
-
-  // Legacy radius modal styles (keep for compatibility)
-  radiusModal: {
-    backgroundColor: colors.card,
-    borderRadius: 20,
-    padding: 24,
-    width: width - 48,
-    maxWidth: 340,
-  },
-  radiusModalTitle: {
-    fontSize: 18,
-    fontWeight: 'bold',
-    color: colors.text,
-    textAlign: 'center',
-    marginBottom: 4,
-  },
-  radiusModalSubtitle: {
-    fontSize: 13,
-    color: colors.textSecondary,
-    textAlign: 'center',
-    marginBottom: 20,
-  },
-  radiusOptions: {
-    flexDirection: 'row',
-    flexWrap: 'wrap',
-    justifyContent: 'center',
-    gap: 10,
-    marginBottom: 20,
-  },
-  radiusOption: {
-    paddingVertical: 10,
-    paddingHorizontal: 18,
-    borderRadius: 20,
-    backgroundColor: colors.backgroundSecondary,
-    minWidth: 70,
-    alignItems: 'center',
-  },
-  radiusOptionActive: {
-    backgroundColor: colors.primary,
-  },
-  radiusOptionText: {
-    fontSize: 14,
-    fontWeight: '600',
-    color: colors.text,
-  },
-  radiusOptionTextActive: {
-    color: colors.buttonPrimaryText,
-  },
-  radiusDeleteButton: {
-    paddingVertical: 12,
-    alignItems: 'center',
-    borderTopWidth: 1,
-    borderTopColor: colors.border,
-  },
-  radiusDeleteText: {
-    fontSize: 14,
-    color: colors.error,
-    fontWeight: '500',
   },
 
   // ============================================

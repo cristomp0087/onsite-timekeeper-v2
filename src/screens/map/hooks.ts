@@ -17,7 +17,9 @@ import {
   selectLocations,
   selectCurrentLocation,
   selectIsGeofencingActive,
+  type WorkLocation,
 } from '../../stores/locationStore';
+import { logger } from '../../lib/logger';
 import { getRandomGeofenceColor } from '../../constants/colors';
 import {
   DEFAULT_REGION,
@@ -72,8 +74,8 @@ export function useMapScreen() {
   // Temporary pin (before confirming)
   const [tempPin, setTempPin] = useState<TempPin | null>(null);
 
-  // Radius adjustment modal
-  const [selectedLocationId, setSelectedLocationId] = useState<string | null>(null);
+  // Radius adjustment modal - store full object to avoid race condition
+  const [selectedLocation, setSelectedLocation] = useState<WorkLocation | null>(null);
   const [showRadiusModal, setShowRadiusModal] = useState(false);
 
   // Add location modal
@@ -125,6 +127,7 @@ export function useMapScreen() {
   }, [shakeAnimation]);
 
   const cancelAndClearPin = useCallback(() => {
+    logger.debug('ui', '❌ Add location cancelled');
     setShowNameModal(false);
     setTempPin(null);
     setNewLocationName('');
@@ -162,6 +165,7 @@ export function useMapScreen() {
     Keyboard.dismiss();
 
     const { latitude, longitude } = e.nativeEvent.coordinate;
+    logger.debug('ui', '📍 Map long press - creating temp pin', { lat: latitude.toFixed(5), lng: longitude.toFixed(5) });
     setTempPin({ lat: latitude, lng: longitude });
 
     // Open name modal automatically
@@ -198,12 +202,19 @@ export function useMapScreen() {
   const handleConfirmAddLocation = useCallback(async () => {
     // Validation: if no name, shake and don't close
     if (!newLocationName.trim()) {
+      logger.debug('ui', '⚠️ Location name empty - validation failed');
       shakeInput();
       return;
     }
     if (!tempPin) return;
 
     setIsAdding(true);
+    logger.info('ui', `➕ Adding location: "${newLocationName}"`, { 
+      lat: tempPin.lat.toFixed(5), 
+      lng: tempPin.lng.toFixed(5),
+      radius: newLocationRadius 
+    });
+    
     try {
       // FIX: addLocation now takes separate arguments, not an object
       await addLocation(
@@ -221,8 +232,10 @@ export function useMapScreen() {
       setNewLocationRadius(DEFAULT_RADIUS);
       setNameInputError(false);
 
+      logger.info('ui', `✅ Location added successfully: "${newLocationName}"`);
       Alert.alert('✅ Success', `Location "${newLocationName}" added!`);
     } catch (error: any) {
+      logger.error('ui', `❌ Failed to add location: "${newLocationName}"`, { error: error.message });
       Alert.alert('Error', error.message || 'Could not add location');
     } finally {
       setIsAdding(false);
@@ -230,11 +243,18 @@ export function useMapScreen() {
   }, [newLocationName, tempPin, newLocationRadius, addLocation, shakeInput]);
 
   const handleCirclePress = useCallback((locationId: string) => {
-    setSelectedLocationId(locationId);
-    setShowRadiusModal(true);
-  }, []);
+    const location = locations.find(l => l.id === locationId);
+    if (location) {
+      logger.debug('ui', `🎯 Opening options modal: "${location.name}"`);
+      setSelectedLocation(location);
+      setShowRadiusModal(true);
+    } else {
+      logger.warn('ui', `⚠️ Location not found for id: ${locationId}`);
+    }
+  }, [locations]);
 
   const handleCircleLongPress = useCallback((locationId: string, locationName: string) => {
+    logger.debug('ui', `🗑️ Delete requested: "${locationName}"`);
     Alert.alert(
       '🗑️ Remove Location',
       `Remove "${locationName}"?`,
@@ -244,9 +264,12 @@ export function useMapScreen() {
           text: 'Remove',
           style: 'destructive',
           onPress: async () => {
+            logger.info('ui', `🗑️ Deleting location: "${locationName}"`, { id: locationId });
             try {
               await removeLocation(locationId);
+              logger.info('ui', `✅ Location deleted: "${locationName}"`);
             } catch (error: any) {
+              logger.error('ui', `❌ Failed to delete location: "${locationName}"`, { error: error.message });
               Alert.alert('Error', error.message || 'Could not remove');
             }
           },
@@ -256,25 +279,35 @@ export function useMapScreen() {
   }, [removeLocation]);
 
   const handleChangeRadius = useCallback(async (newRadius: number) => {
-    if (!selectedLocationId) return;
+    if (!selectedLocation) return;
 
+    logger.info('ui', `📏 Changing radius: "${selectedLocation.name}"`, { 
+      from: selectedLocation.radius, 
+      to: newRadius 
+    });
+    
     try {
-      await editLocation(selectedLocationId, { radius: newRadius });
+      await editLocation(selectedLocation.id, { radius: newRadius });
+      logger.info('ui', `✅ Radius updated: "${selectedLocation.name}" → ${newRadius}m`);
       setShowRadiusModal(false);
-      setSelectedLocationId(null);
+      setSelectedLocation(null);
     } catch (error: any) {
+      logger.error('ui', `❌ Failed to change radius: "${selectedLocation.name}"`, { error: error.message });
       Alert.alert('Error', error.message || 'Could not change radius');
     }
-  }, [selectedLocationId, editLocation]);
+  }, [selectedLocation, editLocation]);
 
   const handleToggleMonitoring = useCallback(() => {
     if (isMonitoringActive) {
+      logger.info('ui', '⏹️ User toggled monitoring OFF');
       stopMonitoring();
     } else {
       if (locations.length === 0) {
+        logger.warn('ui', '⚠️ Cannot start monitoring - no locations');
         Alert.alert('Warning', 'Add at least one location first');
         return;
       }
+      logger.info('ui', `▶️ User toggled monitoring ON (${locations.length} locations)`);
       startMonitoring();
     }
   }, [isMonitoringActive, locations.length, startMonitoring, stopMonitoring]);
@@ -284,15 +317,10 @@ export function useMapScreen() {
   }, [animateToLocation]);
 
   const handleCloseRadiusModal = useCallback(() => {
+    logger.debug('ui', '❌ Options modal closed');
     setShowRadiusModal(false);
-    setSelectedLocationId(null);
+    setSelectedLocation(null);
   }, []);
-
-  // ============================================
-  // COMPUTED VALUES
-  // ============================================
-
-  const selectedLocation = locations.find(l => l.id === selectedLocationId);
 
   // ============================================
   // RETURN
@@ -337,7 +365,6 @@ export function useMapScreen() {
     handleCircleLongPress,
     handleChangeRadius,
     handleToggleMonitoring,
-    handleLocationChipPress,
     handleCloseRadiusModal,
     cancelAndClearPin,
   };

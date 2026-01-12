@@ -57,6 +57,7 @@ export interface SearchResult {
   cidade?: string;
   estado?: string;
   pais?: string;
+  distancia?: number; // Distance from user in km
 }
 
 export interface MapScreenState {
