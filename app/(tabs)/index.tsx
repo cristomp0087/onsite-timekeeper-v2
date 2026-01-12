@@ -187,7 +187,7 @@ export default function HomeScreen() {
           activeOpacity={0.7}
         >
           <Image 
-            source={require('../../assets/logo-onsite.png')} 
+            source={require('../../assets/logo_onsite.png')} 
             style={styles.headerLogo}
             resizeMode="contain"
           />
