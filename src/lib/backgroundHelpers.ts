@@ -320,6 +320,17 @@ export function getPingPongSummary(fenceId?: string): {
 }
 
 /**
+ * Record low GPS accuracy event (used by geofenceLogic.ts)
+ */
+export async function recordLowAccuracy(accuracy: number): Promise<void> {
+  const userId = await getBackgroundUserId();
+  if (!userId) {
+    logger.debug('pingpong', 'No userId, skipping low accuracy record');
+    return;
+  }
+  logger.warn('pingpong', `📡 Low GPS accuracy recorded: ${accuracy.toFixed(0)}m`);
+}
+/**
  * Check for ping-pong pattern (used by backgroundTasks.ts)
  */
 export async function checkForPingPong(fenceId?: string): Promise<{

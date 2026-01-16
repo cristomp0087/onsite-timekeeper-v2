@@ -1,5 +1,7 @@
 /**
  * Tabs Layout - OnSite Timekeeper
+ * 
+ * v1.1: Added Reports tab (calendar moved from Home)
  */
 
 import React from 'react';
@@ -34,6 +36,15 @@ export default function TabsLayout() {
           title: 'Home',
           tabBarIcon: ({ color, size }) => (
             <Ionicons name="home" size={size} color={color} />
+          ),
+        }}
+      />
+      <Tabs.Screen
+        name="reports"
+        options={{
+          title: 'Reports',
+          tabBarIcon: ({ color, size }) => (
+            <Ionicons name="bar-chart" size={size} color={color} />
           ),
         }}
       />

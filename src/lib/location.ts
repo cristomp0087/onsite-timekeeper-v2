@@ -12,11 +12,11 @@
 
 import * as Location from 'expo-location';
 import { logger } from './logger';
-import { LOCATION_TASK_NAME, GEOFENCE_TASK_NAME } from './constants';
+import { LOCATION_TASK, GEOFENCE_TASK } from './backgroundTypes';
 
-
-// Re-export for backward compatibility
-export { LOCATION_TASK_NAME, GEOFENCE_TASK_NAME };
+// Internal aliases (shorter names for this file)
+const LOCATION_TASK_NAME = LOCATION_TASK;
+const GEOFENCE_TASK_NAME = GEOFENCE_TASK;
 
 // ============================================
 // TYPES
@@ -282,19 +282,41 @@ export async function startGeofencing(regions: GeofenceRegion[]): Promise<boolea
 
     logger.info('geofence', `🎯 Starting geofencing for ${regions.length} region(s)`);
 
-    // Configure regions
+    // Log regions for debugging
+    regions.forEach((r, idx) => {
+      logger.debug('geofence', `Region ${idx + 1}: ${r.identifier} @ (${r.latitude.toFixed(4)}, ${r.longitude.toFixed(4)}) radius=${r.radius}m`);
+    });
+
+    // Configure regions with EXPLICIT notifyOnExit: true
     const locationRegions = regions.map(r => ({
       identifier: r.identifier,
       latitude: r.latitude,
       longitude: r.longitude,
       radius: r.radius,
-      notifyOnEnter: r.notifyOnEnter ?? true,
-      notifyOnExit: r.notifyOnExit ?? true,
+      notifyOnEnter: true,  // Always enable entry notifications
+      notifyOnExit: true,   // Always enable exit notifications
     }));
 
+    // Stop existing geofencing first (clean slate)
+    const wasRunning = await Location.hasStartedGeofencingAsync(GEOFENCE_TASK_NAME);
+    if (wasRunning) {
+      logger.info('geofence', '🔄 Stopping existing geofencing before restart');
+      await Location.stopGeofencingAsync(GEOFENCE_TASK_NAME);
+    }
+
+    // Start geofencing
     await Location.startGeofencingAsync(GEOFENCE_TASK_NAME, locationRegions);
 
-    logger.info('geofence', '✅ Geofencing started successfully');
+    // Verify it started
+    const isNowRunning = await Location.hasStartedGeofencingAsync(GEOFENCE_TASK_NAME);
+    if (!isNowRunning) {
+      logger.error('geofence', '❌ Geofencing failed to start (hasStartedGeofencingAsync = false)');
+      return false;
+    }
+
+    logger.info('geofence', `✅ Geofencing started successfully with ${locationRegions.length} regions`);
+    logger.info('geofence', `✅ notifyOnEnter: true, notifyOnExit: true for all regions`);
+
     return true;
   } catch (error) {
     logger.error('geofence', 'Error starting geofencing', { error: String(error) });

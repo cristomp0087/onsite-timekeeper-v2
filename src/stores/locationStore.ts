@@ -49,15 +49,17 @@ import {
   type RecordDB,
 } from '../lib/database';
 import {
-  updateActiveFences,
   startHeartbeat,
   stopHeartbeat,
+} from '../lib/backgroundTasks';
+import {
+  updateActiveFences,
   addToSkippedToday,
   removeFromSkippedToday,
-  setReconfiguring,
   checkInsideFence,
-  type GeofenceEvent,
-} from '../lib/backgroundTasks';
+} from '../lib/backgroundHelpers';
+import { setReconfiguring } from '../lib/geofenceLogic';
+import type { GeofenceEvent } from '../lib/backgroundTypes';
 import { useAuthStore } from './authStore';
 import { useSyncStore } from './syncStore';
 import { useWorkSessionStore } from './workSessionStore';

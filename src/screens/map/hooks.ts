@@ -11,9 +11,10 @@ import { Alert, Keyboard, Animated } from 'react-native';
 import type MapView from 'react-native-maps';
 import type { Region } from 'react-native-maps';
 import type { TextInput } from 'react-native';
+import { useLocalSearchParams } from 'expo-router';
 
-import { 
-  useLocationStore, 
+import {
+  useLocationStore,
   selectLocations,
   selectCurrentLocation,
   selectIsGeofencingActive,
@@ -36,6 +37,10 @@ import {
 // ============================================
 
 export function useMapScreen() {
+  // URL params - for centering on specific location
+  const params = useLocalSearchParams<{ locationId?: string }>();
+  const targetLocationId = params.locationId;
+
   // Refs
   const mapRef = useRef<MapView>(null);
   const nameInputRef = useRef<TextInput>(null);
@@ -108,6 +113,31 @@ export function useMapScreen() {
     }
   }, [currentLocation, mapReady]);
 
+  // Handle map navigation based on URL params
+  useEffect(() => {
+    if (!mapReady) return;
+
+    if (targetLocationId) {
+      // Long press from home - center specific location
+      const targetLocation = locations.find(loc => loc.id === targetLocationId);
+      if (targetLocation) {
+        logger.info('ui', `🎯 Centering map on: "${targetLocation.name}" (from URL param)`);
+        // Small delay to ensure map is fully rendered
+        setTimeout(() => {
+          animateToLocation(targetLocation.latitude, targetLocation.longitude, 'close');
+        }, 300);
+      } else {
+        logger.warn('ui', `⚠️ Target location not found: ${targetLocationId}`);
+      }
+    } else if (locations.length > 0) {
+      // Normal navigation - fit all locations
+      logger.info('ui', '🗺️ Fitting map to all locations (normal navigation)');
+      setTimeout(() => {
+        fitToAllLocations();
+      }, 300);
+    }
+  }, [mapReady, targetLocationId, locations, animateToLocation, fitToAllLocations]);
+
   // ============================================
   // HELPERS
   // ============================================
@@ -146,6 +176,35 @@ export function useMapScreen() {
       MAP_ANIMATION_DURATION
     );
   }, []);
+
+  const fitToAllLocations = useCallback(() => {
+    if (locations.length === 0) {
+      logger.debug('ui', '⚠️ No locations to fit - using current location or default');
+      if (currentLocation) {
+        animateToLocation(currentLocation.latitude, currentLocation.longitude, 'default');
+      }
+      return;
+    }
+
+    if (locations.length === 1) {
+      // Single location - just center on it with close zoom
+      logger.debug('ui', `📍 Fitting to single location: "${locations[0].name}"`);
+      animateToLocation(locations[0].latitude, locations[0].longitude, 'close');
+      return;
+    }
+
+    // Multiple locations - fit to bounds
+    logger.debug('ui', `📍 Fitting map to ${locations.length} locations`);
+    const coordinates = locations.map(loc => ({
+      latitude: loc.latitude,
+      longitude: loc.longitude,
+    }));
+
+    mapRef.current?.fitToCoordinates(coordinates, {
+      edgePadding: { top: 100, right: 50, bottom: 100, left: 50 },
+      animated: true,
+    });
+  }, [locations, currentLocation, animateToLocation]);
 
   // ============================================
   // HANDLERS
@@ -246,12 +305,16 @@ export function useMapScreen() {
     const location = locations.find(l => l.id === locationId);
     if (location) {
       logger.debug('ui', `🎯 Opening options modal: "${location.name}"`);
+
+      // Center the location when clicked
+      animateToLocation(location.latitude, location.longitude, 'close');
+
       setSelectedLocation(location);
       setShowRadiusModal(true);
     } else {
       logger.warn('ui', `⚠️ Location not found for id: ${locationId}`);
     }
-  }, [locations]);
+  }, [locations, animateToLocation]);
 
   const handleCircleLongPress = useCallback((locationId: string, locationName: string) => {
     logger.debug('ui', `🗑️ Delete requested: "${locationName}"`);
@@ -268,6 +331,11 @@ export function useMapScreen() {
             try {
               await removeLocation(locationId);
               logger.info('ui', `✅ Location deleted: "${locationName}"`);
+
+              // Auto-adjust zoom to fit remaining locations
+              setTimeout(() => {
+                fitToAllLocations();
+              }, 500);
             } catch (error: any) {
               logger.error('ui', `❌ Failed to delete location: "${locationName}"`, { error: error.message });
               Alert.alert('Error', error.message || 'Could not remove');
@@ -276,7 +344,7 @@ export function useMapScreen() {
         },
       ]
     );
-  }, [removeLocation]);
+  }, [removeLocation, fitToAllLocations]);
 
   const handleChangeRadius = useCallback(async (newRadius: number) => {
     if (!selectedLocation) return;

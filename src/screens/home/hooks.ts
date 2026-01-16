@@ -199,29 +199,19 @@ export function useHomeScreen() {
 
   // Compute data for each location card
   const locationCardsData = useMemo(() => {
-    // Determine the period to calculate hours
-    let periodSessions: ComputedSession[];
-    
-    if (selectedDays.size > 0) {
-      // Filter sessions from selected days
-      periodSessions = sessions.filter(s => {
-        if (!s.exit_at) return false; // Only completed sessions
-        const sessionDate = new Date(s.entry_at);
-        const dayKey = getDayKey(sessionDate);
-        return selectedDays.has(dayKey);
-      });
-    } else {
-      // Default: use current week sessions
-      periodSessions = weekSessions.filter(s => s.exit_at);
-    }
+    // Use TODAY's sessions only for the carousel
+    const todaySessions = weekSessions.filter(s => {
+      const sessionDate = new Date(s.entry_at);
+      return isToday(sessionDate) && s.exit_at;
+    });
 
-    return activeLocations.map(location => {
+    const cards = activeLocations.map(location => {
       // Check if this location has active session
       const hasActiveSession = currentSession?.location_id === location.id;
       const activeSessionEntry = hasActiveSession ? currentSession?.entry_at : null;
-      
-      // Calculate total hours for this location in the period
-      const locationSessions = periodSessions.filter(s => s.location_id === location.id);
+
+      // Calculate total hours for this location TODAY
+      const locationSessions = todaySessions.filter(s => s.location_id === location.id);
       const totalMinutes = locationSessions.reduce((acc, s) => {
         const pauseMin = s.pause_minutes || 0;
         return acc + Math.max(0, s.duration_minutes - pauseMin);
@@ -267,7 +257,22 @@ export function useHomeScreen() {
         sessionsCount: locationSessions.length,
       };
     });
-  }, [activeLocations, sessions, weekSessions, selectedDays, currentSession]);
+
+    // Sort by: 1) Active session first, 2) Total minutes today (desc), 3) Alphabetical
+    return cards.sort((a, b) => {
+      // Active session always comes first
+      if (a.hasActiveSession && !b.hasActiveSession) return -1;
+      if (!a.hasActiveSession && b.hasActiveSession) return 1;
+
+      // Sort by total minutes today (descending)
+      if (a.totalMinutes !== b.totalMinutes) {
+        return b.totalMinutes - a.totalMinutes;
+      }
+
+      // Alphabetical as tiebreaker
+      return a.name.localeCompare(b.name);
+    });
+  }, [activeLocations, weekSessions, currentSession]);
 
   // ============================================
   // PENDING EXPORT EFFECT (from notification)
@@ -706,12 +711,18 @@ const handleDayPress = (dayKey: string, hasSessions: boolean) => {
   // Parse date safely (YYYY-MM-DD)
   const [year, month, day] = dayKey.split('-').map(Number);
   const date = new Date(year, month - 1, day);
-  
+
   // Block future days
   if (isFutureDay(date)) {
-    return; // Do nothing for future days
+    Alert.alert(
+      '⚠️ Future Date',
+      'Cannot log hours for future dates',
+      [{ text: 'OK', style: 'default' }],
+      { cancelable: true }
+    );
+    return;
   }
-  
+
   if (selectionMode) {
     // In selection mode, allow selecting ANY past/present day (including empty)
     toggleSelectDay(dayKey);
@@ -725,12 +736,18 @@ const handleDayPress = (dayKey: string, hasSessions: boolean) => {
     // Parse date
     const [year, month, day] = dayKey.split('-').map(Number);
     const date = new Date(year, month - 1, day);
-    
+
     // Block future days
     if (isFutureDay(date)) {
+      Alert.alert(
+        '⚠️ Future Date',
+        'Cannot select or export future dates',
+        [{ text: 'OK', style: 'default' }],
+        { cancelable: true }
+      );
       return;
     }
-    
+
     if (!selectionMode) {
       // Enter selection mode - allow even empty days
       setSelectionMode(true);
@@ -822,6 +839,17 @@ const handleDayPress = (dayKey: string, hasSessions: boolean) => {
   // ============================================
 
   const openManualEntry = (date: Date) => {
+    // Block future days
+    if (isFutureDay(date)) {
+      Alert.alert(
+        '⚠️ Future Date',
+        'Cannot log hours for future dates',
+        [{ text: 'OK', style: 'default' }],
+        { cancelable: true }
+      );
+      return;
+    }
+
     setManualDate(date);
     setManualLocationId(locations[0]?.id || '');
     // Default values: 08:00 and 17:00
@@ -1279,6 +1307,99 @@ const handleDayPress = (dayKey: string, hasSessions: boolean) => {
     Alert.alert('📤 Export', exportLabel, options);
   };
 
+/**
+ * PATCH: hooks.ts
+ * 
+ * ADD this function BEFORE the return statement (around line 1280)
+ * 
+ * This provides suggested entry/exit times based on geofence sessions.
+ */
+
+// ============================================
+// SUGGESTED TIMES (for manual entry)
+// ============================================
+
+/**
+ * Get suggested entry/exit times for a location
+ * 
+ * Logic:
+ * 1. Check if there's a geofence session today for this location
+ * 2. If yes, use those times (rounded to half hour)
+ * 3. If no, use default 09:00 - 15:00
+ */
+const getSuggestedTimes = useCallback((locationId: string) => {
+  // Helper to round to nearest half hour
+  const roundToHalfHour = (hours: number, minutes: number) => {
+    let h = hours;
+    let m = '00';
+    
+    if (minutes < 15) {
+      m = '00';
+    } else if (minutes < 45) {
+      m = '30';
+    } else {
+      h = hours + 1;
+      m = '00';
+    }
+    
+    // Handle overflow
+    if (h >= 24) h = 23;
+    
+    return {
+      h: String(h).padStart(2, '0'),
+      m,
+    };
+  };
+
+  // Find today's sessions for this location (from geofence)
+  const today = new Date();
+  const todaySessions = weekSessions.filter((s: ComputedSession) => {
+    const sessionDate = new Date(s.entry_at);
+    const isSessionToday = isSameDay(sessionDate, today);
+    const isCorrectLocation = s.location_id === locationId;
+    // Only auto sessions (from geofence)
+    const isAutoSession = s.type !== 'manual';
+    
+    return isSessionToday && isCorrectLocation && isAutoSession;
+  });
+
+  if (todaySessions.length > 0) {
+    // Use the most recent session's times
+    const session = todaySessions[todaySessions.length - 1];
+    const entryDate = new Date(session.entry_at);
+    const exitDate = session.exit_at ? new Date(session.exit_at) : new Date();
+    
+    const entry = roundToHalfHour(entryDate.getHours(), entryDate.getMinutes());
+    const exit = roundToHalfHour(exitDate.getHours(), exitDate.getMinutes());
+    
+    return {
+      entryH: entry.h,
+      entryM: entry.m,
+      exitH: exit.h,
+      exitM: exit.m,
+    };
+  }
+  
+  // Default times: 09:00 - 15:00
+  return {
+    entryH: '09',
+    entryM: '00',
+    exitH: '15',
+    exitM: '00',
+  };
+}, [weekSessions, isSameDay]);
+
+
+// ============================================
+// UPDATE RETURN STATEMENT
+// ============================================
+
+// ADD to the return object:
+//
+//     // NEW: Suggested times for manual entry
+//     getSuggestedTimes,
+//     weekSessions,
+  
   // ============================================
   // RETURN
   // ============================================
@@ -1414,6 +1535,9 @@ const handleDayPress = (dayKey: string, hasSessions: boolean) => {
     getDayKey,
     isSameDay,
     DAY_TAGS,
+    getSuggestedTimes,
+    weekSessions,
+    monthSessions,
   };
 }
 

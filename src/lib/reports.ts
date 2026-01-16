@@ -670,28 +670,4 @@ WHERE id::text LIKE '%${decoded.userSuffix}';
   `.trim();
 }
 
-// ============================================
-// DEPRECATED ALIASES (backward compatibility)
-// Remove after all consumers updated
-// ============================================
 
-/** @deprecated Use generateSessionReport instead */
-export const gerarRelatorioSessao = generateSessionReport;
-
-/** @deprecated Use generateCompleteReport instead */
-export const gerarRelatorioCompleto = generateCompleteReport;
-
-/** @deprecated Use generateSummary instead */
-export const gerarResumo = generateSummary;
-
-/** @deprecated Use ReportMetadata instead */
-export type RelatorioMetadata = ReportMetadata;
-
-/** @deprecated Use getReportMetadata instead */
-export const getRelatorioMetadata = getReportMetadata;
-
-/** @deprecated Use GroupedReport instead */
-export type RelatorioAgrupado = GroupedReport;
-
-/** @deprecated Use groupSessionsByLocation instead */
-export const agruparSessoesPorLocal = groupSessionsByLocation;

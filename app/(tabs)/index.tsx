@@ -1,114 +1,126 @@
 /**
  * Home Screen - OnSite Timekeeper
- * 
- * Main screen with timer and session calendar.
- * 
- * Refactored structure:
- * - index.tsx         → JSX (this file)
- * - hooks.ts          → Logic (states, effects, handlers)
- * - helpers.ts        → Utility functions
- * - styles.ts         → StyleSheet
- * 
- * UPDATED: 
- * - Removed Session Finished Modal (was causing confusion)
- * - Added Day Detail Modal with session selection
- * - Consistent behavior between week/month views
- * - Added Permission Banner for foreground service warnings
+ *
+ * v2.0: Enhanced manual entry UX
+ * - Date picker with visual indicator
+ * - Time picker modals (tap-to-select)
+ * - Real-time total hours calculation
+ * - Improved visual hierarchy
  */
 
-import React, { useRef, useState } from 'react';
+import React, { useRef, useState, useEffect } from 'react';
 import {
   View,
   Text,
-  ScrollView,
   TouchableOpacity,
-  RefreshControl,
   Modal,
   TextInput,
   ViewStyle,
   Image,
   Linking,
+  ScrollView,
+  Platform,
+  Animated,
+  StyleSheet,
 } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
 import { useRouter } from 'expo-router';
+import DateTimePicker from '@react-native-community/datetimepicker';
 
 import { Card } from '../../src/components/ui/Button';
 import { colors } from '../../src/constants/colors';
-import type { ComputedSession } from '../../src/lib/database';
 import type { WorkLocation } from '../../src/stores/locationStore';
 
 import { useHomeScreen } from '../../src/screens/home/hooks';
-import { styles } from '../../src/screens/home/styles';
-import { WEEKDAYS_SHORT, type CalendarDay } from '../../src/screens/home/helpers';
+import { styles, fixedStyles } from '../../src/screens/home/styles';
 import { HomePermissionBanner } from '../../src/components/PermissionBanner';
 
-// ============================================
-// COMPONENT
-// ============================================
+// Helper to format date
+function formatDate(date: Date): string {
+  const today = new Date();
+  const yesterday = new Date(today);
+  yesterday.setDate(yesterday.getDate() - 1);
+
+  if (date.toDateString() === today.toDateString()) {
+    return 'Today';
+  } else if (date.toDateString() === yesterday.toDateString()) {
+    return 'Yesterday';
+  } else {
+    const months = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
+    return `${months[date.getMonth()]} ${date.getDate()}, ${date.getFullYear()}`;
+  }
+}
+
+// Helper to format date with day
+function formatDateWithDay(date: Date): string {
+  const days = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'];
+  const months = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
+  return `${days[date.getDay()]}, ${months[date.getMonth()]} ${date.getDate()}`;
+}
+
+// Calculate total hours
+function calculateTotalHours(entryH: string, entryM: string, exitH: string, exitM: string, pauseMin: string): string {
+  const entryHour = parseInt(entryH) || 0;
+  const entryMinute = parseInt(entryM) || 0;
+  const exitHour = parseInt(exitH) || 0;
+  const exitMinute = parseInt(exitM) || 0;
+  const pause = parseInt(pauseMin) || 0;
+
+  if (!entryH || !exitH) return '--';
+
+  const entryTotal = entryHour * 60 + entryMinute;
+  const exitTotal = exitHour * 60 + exitMinute;
+  let worked = exitTotal - entryTotal;
+
+  if (worked < 0) worked += 24 * 60; // Handle overnight shifts
+  worked -= pause;
+
+  if (worked < 0) return '--';
+
+  const hours = Math.floor(worked / 60);
+  const minutes = worked % 60;
+
+  if (hours === 0) return `${minutes}min`;
+  if (minutes === 0) return `${hours}h`;
+  return `${hours}h ${minutes}min`;
+}
 
 export default function HomeScreen() {
-  // Refs for auto-jump between time fields
-  const entryMRef = useRef<TextInput>(null);
-  const exitHRef = useRef<TextInput>(null);
-  const exitMRef = useRef<TextInput>(null);
-  const pauseRef = useRef<TextInput>(null);
-  
-  // Navigation
   const router = useRouter();
-  
-  // Logo tooltip state
   const [showLogoTooltip, setShowLogoTooltip] = useState(false);
+  const [showLocationDropdown, setShowLocationDropdown] = useState(false);
+
+  // Date picker state
+  const [selectedDate, setSelectedDate] = useState(new Date());
+  const [showDatePicker, setShowDatePicker] = useState(false);
+  const [showDateDropdown, setShowDateDropdown] = useState(false);
+
+  // Time picker modals (using native pickers)
+  const [showEntryPicker, setShowEntryPicker] = useState(false);
+  const [showExitPicker, setShowExitPicker] = useState(false);
+  const [tempEntryTime, setTempEntryTime] = useState(new Date());
+  const [tempExitTime, setTempExitTime] = useState(new Date());
+
+  // Break dropdown state
+  const [showBreakDropdown, setShowBreakDropdown] = useState(false);
+  const [showBreakCustomInput, setShowBreakCustomInput] = useState(false);
+
+  // Toast notification for future dates
+  const [toastMessage, setToastMessage] = useState('');
+  const toastOpacity = useRef(new Animated.Value(0)).current;
 
   const {
-    // Data
     userName,
     locations,
     currentSession,
     activeLocation,
     canRestart,
     isGeofencingActive,
-    
-    // Timer
     timer,
     isPaused,
     pauseTimer,
-    
-    // Calendar
-    viewMode,
-    setViewMode,
-    currentMonth,
-    weekStart,
-    weekEnd,
-    weekCalendarDays,
-    monthCalendarDays,
-    weekTotalMinutes,
-    monthTotalMinutes,
-    
-    // Day selection (batch)
-    selectionMode,
-    selectedDays,
-    cancelSelection,
-    
-    // Day Modal (NEW)
-    showDayModal,
-    selectedDayForModal,
-    dayModalSessions,
-    closeDayModal,
-    
-    // Location Cards (NEW)
     activeLocations,
     locationCardsData,
-    
-    // Session selection (NEW)
-    selectedSessions,
-    toggleSelectSession,
-    selectAllSessions,
-    deselectAllSessions,
-    
-    // Manual entry modal
-    showManualModal,
-    setShowManualModal,
-    manualDate,
     manualLocationId,
     setManualLocationId,
     manualEntryH,
@@ -121,89 +133,206 @@ export default function HomeScreen() {
     setManualExitM,
     manualPause,
     setManualPause,
-    manualEntryMode,
-    setManualEntryMode,
-    manualAbsenceType,
-    setManualAbsenceType,
-    
-    // Refresh
-    refreshing,
-    onRefresh,
-    
-    // Timer handlers
     handlePause,
     handleResume,
     handleStop,
     handleRestart,
-    
-    // Navigation handlers
-    goToPreviousWeek,
-    goToNextWeek,
-    goToCurrentWeek,
-    goToPreviousMonth,
-    goToNextMonth,
-    goToCurrentMonth,
-    
-    // Day handlers
-    handleDayPress,
-    handleDayLongPress,
-    getSessionsForDay,
-    getTotalMinutesForDay,
-    
-    // Modal handlers
-    openManualEntry,
     handleSaveManual,
-    handleDeleteSession,
-    handleDeleteSelectedSessions,
-    handleDeleteFromModal,
-    handleExport,
-    handleDeleteSelectedDays,
-    handleExportFromModal,
-    
-    // Helpers
-    formatDateRange,
-    formatMonthYear,
-    formatTimeAMPM,
-    formatDuration,
-    isToday,
-    getDayKey,
+    getSuggestedTimes,
   } = useHomeScreen();
 
-  // ============================================
-  // RENDER
-  // ============================================
+  useEffect(() => {
+    if (locations.length > 0 && !manualLocationId) {
+      const firstLocationId = locations[0].id;
+      setManualLocationId(firstLocationId);
+      const suggested = getSuggestedTimes?.(firstLocationId);
+      if (suggested) {
+        setManualEntryH(suggested.entryH);
+        setManualEntryM(suggested.entryM);
+        setManualExitH(suggested.exitH);
+        setManualExitM(suggested.exitM);
+      } else {
+        setManualEntryH('09');
+        setManualEntryM('00');
+        setManualExitH('17');
+        setManualExitM('00');
+      }
+    }
+  }, [locations]);
+
+  const handleLocationChange = (locationId: string) => {
+    setManualLocationId(locationId);
+    setShowLocationDropdown(false);
+    const suggested = getSuggestedTimes?.(locationId);
+    if (suggested) {
+      setManualEntryH(suggested.entryH);
+      setManualEntryM(suggested.entryM);
+      setManualExitH(suggested.exitH);
+      setManualExitM(suggested.exitM);
+    }
+  };
+
+  const handleBreakSelect = (minutes: string) => {
+    if (minutes === 'custom') {
+      setShowBreakCustomInput(true);
+      setShowBreakDropdown(false);
+    } else {
+      setManualPause(minutes);
+      setShowBreakDropdown(false);
+      setShowBreakCustomInput(false);
+    }
+  };
+
+  const selectedLocation = locations.find((l: WorkLocation) => l.id === manualLocationId);
+
+  // Show toast notification
+  const showToast = (message: string) => {
+    setToastMessage(message);
+    Animated.sequence([
+      Animated.timing(toastOpacity, {
+        toValue: 1,
+        duration: 200,
+        useNativeDriver: true,
+      }),
+      Animated.delay(2500),
+      Animated.timing(toastOpacity, {
+        toValue: 0,
+        duration: 200,
+        useNativeDriver: true,
+      }),
+    ]).start(() => setToastMessage(''));
+  };
+
+  // Date selection handlers
+  const handleDateSelect = (option: 'today' | 'yesterday' | 'custom') => {
+    const newDate = new Date();
+    if (option === 'yesterday') {
+      newDate.setDate(newDate.getDate() - 1);
+    } else if (option === 'custom') {
+      setShowDatePicker(true);
+      setShowDateDropdown(false);
+      return;
+    }
+    setSelectedDate(newDate);
+    setShowDateDropdown(false);
+  };
+
+  const onDateChange = (event: any, date?: Date) => {
+    setShowDatePicker(false);
+    if (date && event.type === 'set') {
+      // Check if date is in the future
+      const today = new Date();
+      today.setHours(23, 59, 59, 999); // End of today
+
+      if (date > today) {
+        showToast('⚠️ Cannot log hours for future dates');
+        return;
+      }
+
+      setSelectedDate(date);
+    }
+  };
+
+  // Time picker handlers
+  const handleOpenEntryPicker = () => {
+    const hour = parseInt(manualEntryH) || 9;
+    const minute = parseInt(manualEntryM) || 0;
+    const date = new Date();
+    date.setHours(hour, minute, 0, 0);
+    setTempEntryTime(date);
+    setShowEntryPicker(true);
+  };
+
+  const handleOpenExitPicker = () => {
+    const hour = parseInt(manualExitH) || 17;
+    const minute = parseInt(manualExitM) || 0;
+    const date = new Date();
+    date.setHours(hour, minute, 0, 0);
+    setTempExitTime(date);
+    setShowExitPicker(true);
+  };
+
+  const onEntryTimeChange = (event: any, time?: Date) => {
+    if (Platform.OS === 'android') {
+      setShowEntryPicker(false);
+    }
+    if (time && event.type === 'set') {
+      const h = time.getHours().toString().padStart(2, '0');
+      const m = time.getMinutes().toString().padStart(2, '0');
+      setManualEntryH(h);
+      setManualEntryM(m);
+      if (Platform.OS === 'ios') {
+        setTempEntryTime(time);
+      }
+    }
+  };
+
+  const onExitTimeChange = (event: any, time?: Date) => {
+    if (Platform.OS === 'android') {
+      setShowExitPicker(false);
+    }
+    if (time && event.type === 'set') {
+      const h = time.getHours().toString().padStart(2, '0');
+      const m = time.getMinutes().toString().padStart(2, '0');
+      setManualExitH(h);
+      setManualExitM(m);
+      if (Platform.OS === 'ios') {
+        setTempExitTime(time);
+      }
+    }
+  };
+
+  const confirmEntryTime = () => {
+    const h = tempEntryTime.getHours().toString().padStart(2, '0');
+    const m = tempEntryTime.getMinutes().toString().padStart(2, '0');
+    setManualEntryH(h);
+    setManualEntryM(m);
+    setShowEntryPicker(false);
+  };
+
+  const confirmExitTime = () => {
+    const h = tempExitTime.getHours().toString().padStart(2, '0');
+    const m = tempExitTime.getMinutes().toString().padStart(2, '0');
+    setManualExitH(h);
+    setManualExitM(m);
+    setShowExitPicker(false);
+  };
+
+  // Calculate total hours in real-time
+  const totalHours = calculateTotalHours(manualEntryH, manualEntryM, manualExitH, manualExitM, manualPause);
 
   return (
-    <ScrollView
-      style={styles.container}
-      contentContainerStyle={styles.content}
-      refreshControl={<RefreshControl refreshing={refreshing} onRefresh={onRefresh} />}
-    >
+    <View style={fixedStyles.container}>
+      <ScrollView
+        style={{ flex: 1 }}
+        contentContainerStyle={{ flexGrow: 1 }}
+        showsVerticalScrollIndicator={false}
+      >
       {/* HEADER */}
-      <View style={styles.header}>
-        <TouchableOpacity 
+      <View style={fixedStyles.header}>
+        <TouchableOpacity
           style={styles.headerLogoContainer}
           onPress={() => setShowLogoTooltip(true)}
           activeOpacity={0.7}
         >
-          <Image 
-            source={require('../../assets/logo_onsite.png')} 
-            style={styles.headerLogo}
+          <Image
+            source={require('../../assets/logo_onsite.png')}
+            style={fixedStyles.headerLogo}
             resizeMode="contain"
           />
         </TouchableOpacity>
-        
+
         <View style={styles.headerUserContainer}>
           <Text style={styles.headerUserName} numberOfLines={1}>
             {userName || 'User'}
           </Text>
           <View style={styles.headerUserAvatar}>
-            <Ionicons name="person" size={16} color={colors.textSecondary} />
+            <Ionicons name="person" size={14} color={colors.textSecondary} />
           </View>
         </View>
       </View>
 
-      {/* PERMISSION BANNER - Shows when foreground service killed or permissions missing */}
+      {/* PERMISSION BANNER */}
       <HomePermissionBanner />
 
       {/* LOGO TOOLTIP MODAL */}
@@ -238,784 +367,429 @@ export default function HomeScreen() {
         </TouchableOpacity>
       </Modal>
 
-      {/* TIMER */}
+      {/* ============================================ */}
+      {/* LOCATION CARDS - Moved above form */}
+      {/* ============================================ */}
+      <View style={fixedStyles.locationsSection}>
+        {activeLocations.length === 0 ? (
+          <TouchableOpacity
+            style={fixedStyles.emptyLocations}
+            onPress={() => router.push('/(tabs)/map')}
+          >
+            <Ionicons name="location-outline" size={18} color={colors.textMuted} />
+            <Text style={fixedStyles.emptyLocationsText}>Add location</Text>
+          </TouchableOpacity>
+        ) : (
+          <ScrollView
+            horizontal
+            showsHorizontalScrollIndicator={false}
+            contentContainerStyle={fixedStyles.locationCardsRow}
+          >
+            {locationCardsData.slice(0, 5).map(loc => (
+              <TouchableOpacity
+                key={loc.id}
+                style={[
+                  fixedStyles.locationCard,
+                  manualLocationId === loc.id && fixedStyles.locationCardSelected
+                ]}
+                onPress={() => handleLocationChange(loc.id)}
+                onLongPress={() => router.push(`/(tabs)/map?locationId=${loc.id}`)}
+                activeOpacity={0.7}
+              >
+                <View style={fixedStyles.locationCardHeader}>
+                  <Ionicons name="location" size={14} color={loc.color || colors.primary} />
+                  <Text style={fixedStyles.locationCardName} numberOfLines={1}>{loc.name}</Text>
+                </View>
+                {loc.hasActiveSession ? (
+                  <Text style={fixedStyles.locationCardActive}>● Active</Text>
+                ) : (
+                  <Text style={fixedStyles.locationCardTotal}>{loc.totalFormatted}</Text>
+                )}
+              </TouchableOpacity>
+            ))}
+
+            {/* Add location card */}
+            <TouchableOpacity
+              style={fixedStyles.addLocationCardInline}
+              onPress={() => router.push('/(tabs)/map')}
+              activeOpacity={0.7}
+            >
+              <Ionicons name="add" size={20} color={colors.primary} />
+            </TouchableOpacity>
+          </ScrollView>
+        )}
+      </View>
+
+      {/* ============================================ */}
+      {/* LOG HOURS FORM - Enhanced */}
+      {/* ============================================ */}
+      <Card style={fixedStyles.formSection}>
+        {/* Date Selector */}
+        <TouchableOpacity
+          style={fixedStyles.dateSelector}
+          onPress={() => setShowDateDropdown(!showDateDropdown)}
+        >
+          <View style={fixedStyles.dateSelectorContent}>
+            <Ionicons name="calendar-outline" size={16} color={colors.textSecondary} />
+            <Text style={fixedStyles.dateSelectorText}>{formatDateWithDay(selectedDate)}</Text>
+          </View>
+          <Ionicons name="chevron-down" size={16} color={colors.textSecondary} />
+        </TouchableOpacity>
+
+        {/* Date Dropdown */}
+        {showDateDropdown && (
+          <View style={fixedStyles.dateDropdown}>
+            <TouchableOpacity
+              style={fixedStyles.dateOption}
+              onPress={() => handleDateSelect('today')}
+            >
+              <Ionicons name="today-outline" size={16} color={colors.text} />
+              <Text style={fixedStyles.dateOptionText}>Today</Text>
+            </TouchableOpacity>
+            <TouchableOpacity
+              style={fixedStyles.dateOption}
+              onPress={() => handleDateSelect('yesterday')}
+            >
+              <Ionicons name="arrow-back-outline" size={16} color={colors.text} />
+              <Text style={fixedStyles.dateOptionText}>Yesterday</Text>
+            </TouchableOpacity>
+            <TouchableOpacity
+              style={fixedStyles.dateOption}
+              onPress={() => handleDateSelect('custom')}
+            >
+              <Ionicons name="calendar" size={16} color={colors.text} />
+              <Text style={fixedStyles.dateOptionText}>Choose date...</Text>
+            </TouchableOpacity>
+          </View>
+        )}
+
+        {/* ENTRY TIME - Tap to select */}
+        <View style={fixedStyles.timeRow}>
+          <Text style={fixedStyles.timeLabel}>Entry</Text>
+          <TouchableOpacity
+            style={fixedStyles.timePickerButton}
+            onPress={handleOpenEntryPicker}
+          >
+            <Text style={fixedStyles.timePickerText}>
+              {manualEntryH.padStart(2, '0')}:{manualEntryM.padStart(2, '0')}
+            </Text>
+            <Ionicons name="time-outline" size={18} color={colors.textSecondary} />
+          </TouchableOpacity>
+        </View>
+
+        {/* EXIT TIME - Tap to select */}
+        <View style={fixedStyles.timeRow}>
+          <Text style={fixedStyles.timeLabelLg}>Exit</Text>
+          <TouchableOpacity
+            style={fixedStyles.timePickerButtonLg}
+            onPress={handleOpenExitPicker}
+          >
+            <Text style={fixedStyles.timePickerTextLg}>
+              {manualExitH.padStart(2, '0')}:{manualExitM.padStart(2, '0')}
+            </Text>
+            <Ionicons name="time-outline" size={20} color={colors.textSecondary} />
+          </TouchableOpacity>
+        </View>
+
+        {/* BREAK - Dropdown with presets */}
+        <View style={fixedStyles.timeRow}>
+          <Text style={fixedStyles.timeLabel}>Break</Text>
+          {showBreakCustomInput ? (
+            <View style={fixedStyles.timeInputGroup}>
+              <TextInput
+                style={fixedStyles.breakInput}
+                placeholder="0"
+                placeholderTextColor={colors.textMuted}
+                value={manualPause}
+                onChangeText={(t) => setManualPause(t.replace(/[^0-9]/g, '').slice(0, 3))}
+                keyboardType="number-pad"
+                maxLength={3}
+                selectTextOnFocus
+                autoFocus
+                onBlur={() => setShowBreakCustomInput(false)}
+              />
+              <Text style={fixedStyles.breakUnit}>min</Text>
+            </View>
+          ) : (
+            <TouchableOpacity
+              style={fixedStyles.breakDropdownButton}
+              onPress={() => setShowBreakDropdown(!showBreakDropdown)}
+            >
+              <Text style={fixedStyles.breakDropdownText}>
+                {manualPause ? `${manualPause} min` : 'None'}
+              </Text>
+              <Ionicons name="chevron-down" size={16} color={colors.textSecondary} />
+            </TouchableOpacity>
+          )}
+        </View>
+
+        {/* Break Dropdown Menu */}
+        {showBreakDropdown && (
+          <View style={fixedStyles.breakDropdownMenu}>
+            <TouchableOpacity
+              style={fixedStyles.breakOption}
+              onPress={() => handleBreakSelect('0')}
+            >
+              <Text style={fixedStyles.breakOptionText}>None</Text>
+            </TouchableOpacity>
+            <TouchableOpacity
+              style={fixedStyles.breakOption}
+              onPress={() => handleBreakSelect('15')}
+            >
+              <Text style={fixedStyles.breakOptionText}>15 min</Text>
+            </TouchableOpacity>
+            <TouchableOpacity
+              style={fixedStyles.breakOption}
+              onPress={() => handleBreakSelect('30')}
+            >
+              <Text style={fixedStyles.breakOptionText}>30 min</Text>
+            </TouchableOpacity>
+            <TouchableOpacity
+              style={fixedStyles.breakOption}
+              onPress={() => handleBreakSelect('45')}
+            >
+              <Text style={fixedStyles.breakOptionText}>45 min</Text>
+            </TouchableOpacity>
+            <TouchableOpacity
+              style={fixedStyles.breakOption}
+              onPress={() => handleBreakSelect('60')}
+            >
+              <Text style={fixedStyles.breakOptionText}>60 min</Text>
+            </TouchableOpacity>
+            <TouchableOpacity
+              style={[fixedStyles.breakOption, fixedStyles.breakOptionLast]}
+              onPress={() => handleBreakSelect('custom')}
+            >
+              <Ionicons name="create-outline" size={16} color={colors.primary} />
+              <Text style={[fixedStyles.breakOptionText, { color: colors.primary }]}>Custom...</Text>
+            </TouchableOpacity>
+          </View>
+        )}
+
+        {/* TOTAL HOURS - Simplified text */}
+        <View style={fixedStyles.totalRowSimple}>
+          <Text style={fixedStyles.totalSimple}>
+            Total: <Text style={fixedStyles.totalSimpleValue}>{totalHours}</Text>
+          </Text>
+        </View>
+
+        {/* Save Button */}
+        <TouchableOpacity
+          style={fixedStyles.saveButton}
+          onPress={handleSaveManual}
+        >
+          <Ionicons name="checkmark-circle" size={20} color={colors.buttonPrimaryText} />
+          <Text style={fixedStyles.saveButtonText}>Save Hours</Text>
+        </TouchableOpacity>
+      </Card>
+
+      {/* ============================================ */}
+      {/* TIMER - 25% (VERTICAL LAYOUT - buttons below) */}
+      {/* ============================================ */}
       <Card style={[
-        styles.timerCard,
-        currentSession && styles.timerCardActive,
-        canRestart && styles.timerCardIdle
+        fixedStyles.timerSection,
+        currentSession && fixedStyles.timerSectionActive,
       ].filter(Boolean) as ViewStyle[]}>
         {currentSession ? (
-          <>
-            {/* Location Badge (green when active) */}
-            <View style={styles.activeBadge}>
-              <View style={styles.activeBadgeDot} />
-              <Text style={styles.activeBadgeText}>{currentSession.location_name}</Text>
-            </View>
-            
-            <Text style={styles.timerLabel}>Current Session</Text>
-            <Text style={[styles.timer, isPaused && styles.timerPaused]}>{timer}</Text>
-
-            <View style={styles.pausaContainer}>
-              <Ionicons name="cafe-outline" size={16} color={colors.textSecondary} />
-              <Text style={styles.pausaLabel}>Break:</Text>
-              <Text style={[styles.pausaTimer, isPaused && styles.pausaTimerActive]}>
-                {pauseTimer}
-              </Text>
+          <View style={fixedStyles.timerVertical}>
+            {/* Badge + Timer */}
+            <View style={fixedStyles.timerTopRow}>
+              <View style={fixedStyles.activeBadge}>
+                <View style={fixedStyles.activeBadgeDot} />
+                <Text style={fixedStyles.activeBadgeText}>{currentSession.location_name}</Text>
+              </View>
+              <Text style={[fixedStyles.timerDisplay, isPaused && fixedStyles.timerPaused]}>{timer}</Text>
+              <View style={fixedStyles.pausaInfo}>
+                <Ionicons name="cafe-outline" size={14} color={colors.textSecondary} />
+                <Text style={[fixedStyles.pausaTimer, isPaused && fixedStyles.pausaTimerActive]}>
+                  {pauseTimer}
+                </Text>
+              </View>
             </View>
 
-            <View style={styles.timerActions}>
+            {/* Buttons BELOW - centered */}
+            <View style={fixedStyles.timerActionsRow}>
               {isPaused ? (
-                <TouchableOpacity style={[styles.actionBtn, styles.continueBtn]} onPress={handleResume}>
-                  <Ionicons name="play" size={16} color={colors.buttonPrimaryText} />
-                  <Text style={[styles.actionBtnText, styles.continueBtnText]}>Resume</Text>
+                <TouchableOpacity style={fixedStyles.resumeBtn} onPress={handleResume}>
+                  <Ionicons name="play" size={18} color={colors.buttonPrimaryText} />
                 </TouchableOpacity>
               ) : (
-                <TouchableOpacity style={[styles.actionBtn, styles.pauseBtn]} onPress={handlePause}>
-                  <Ionicons name="pause" size={16} color={colors.text} />
-                  <Text style={[styles.actionBtnText, styles.pauseBtnText]}>Pause</Text>
+                <TouchableOpacity style={fixedStyles.pauseBtn} onPress={handlePause}>
+                  <Ionicons name="pause" size={18} color={colors.text} />
                 </TouchableOpacity>
               )}
-              <TouchableOpacity style={[styles.actionBtn, styles.stopBtn]} onPress={handleStop}>
-                <Ionicons name="stop" size={16} color={colors.white} />
-                <Text style={[styles.actionBtnText, styles.stopBtnText]}>End</Text>
+              <TouchableOpacity style={fixedStyles.stopBtn} onPress={handleStop}>
+                <Ionicons name="stop" size={18} color={colors.white} />
               </TouchableOpacity>
             </View>
-          </>
+          </View>
         ) : canRestart ? (
-          <>
-            {/* Location Badge (gray when idle) */}
-            <View style={styles.idleBadge}>
-              <View style={styles.idleBadgeDot} />
-              <Text style={styles.idleBadgeText}>{activeLocation?.name}</Text>
+          <View style={fixedStyles.timerVertical}>
+            <View style={fixedStyles.timerTopRow}>
+              <View style={fixedStyles.idleBadge}>
+                <View style={fixedStyles.idleBadgeDot} />
+                <Text style={fixedStyles.idleBadgeText}>{activeLocation?.name}</Text>
+              </View>
+              <Text style={fixedStyles.timerIdle}>00:00:00</Text>
             </View>
-            
-            <Text style={styles.timer}>00:00:00</Text>
-            <TouchableOpacity style={[styles.actionBtn, styles.startBtn]} onPress={handleRestart}>
-              <Ionicons name="play" size={16} color={colors.buttonPrimaryText} />
-              <Text style={[styles.actionBtnText, styles.startBtnText]}>Start</Text>
-            </TouchableOpacity>
-          </>
+            <View style={fixedStyles.timerActionsRow}>
+              <TouchableOpacity style={fixedStyles.startBtn} onPress={handleRestart}>
+                <Ionicons name="play" size={18} color={colors.buttonPrimaryText} />
+                <Text style={fixedStyles.startBtnText}>Start</Text>
+              </TouchableOpacity>
+            </View>
+          </View>
         ) : (
-          <>
-            <Text style={styles.timerHint}>
-              {isGeofencingActive ? 'Waiting for location entry...' : 'Monitoring inactive'}
+          <View style={fixedStyles.timerWaiting}>
+            <Ionicons name="location-outline" size={20} color={colors.textMuted} />
+            <Text style={fixedStyles.timerWaitingText}>
+              {isGeofencingActive ? 'Waiting for location...' : 'Monitoring inactive'}
             </Text>
-            <Text style={styles.timer}>--:--:--</Text>
-          </>
+          </View>
         )}
       </Card>
 
       {/* ============================================ */}
-      {/* LOCATION CARDS */}
+      {/* TIME PICKERS - Native Modals */}
       {/* ============================================ */}
-      {activeLocations.length > 0 && (
-        <View style={styles.locationCardsSection}>
-          {activeLocations.length === 1 ? (
-            // Single location - full width
-            <TouchableOpacity 
-              style={styles.locationCardFull}
-              onPress={() => router.push('/(tabs)/map')}
-              activeOpacity={0.7}
-            >
-              {locationCardsData.map(loc => (
-                <View key={loc.id}>
-                  <View style={styles.locationCardHeader}>
-                    <View style={styles.locationCardIconContainer}>
-                      <View style={styles.locationCardIconGlow} />
-                      <Ionicons name="location" size={24} color={loc.color || colors.primary} />
-                    </View>
-                    <View style={styles.locationCardHeaderInfo}>
-                      <Text style={styles.locationCardName}>{loc.name}</Text>
-                      <Text style={styles.locationCardCoords}>{loc.coords}</Text>
-                    </View>
-                    <Ionicons name="chevron-forward" size={18} color={colors.textTertiary} />
-                  </View>
-                  
-                  {loc.hasActiveSession ? (
-                    <View style={styles.locationCardTimeRow}>
-                      <Ionicons name="time-outline" size={14} color={colors.success} />
-                      <Text style={styles.locationCardTimeLabel}>In:</Text>
-                      <Text style={[styles.locationCardTimeValue, styles.locationCardTimeActive]}>
-                        {loc.activeSessionEntry}
-                      </Text>
-                      <Ionicons name="arrow-forward" size={14} color={colors.success} />
-                    </View>
-                  ) : (
-                    <View style={styles.locationCardStatsRow}>
-                      <Text style={styles.locationCardTotal}>{loc.totalFormatted}</Text>
-                      <Text style={styles.locationCardSubtext}>
-                        {selectedDays.size > 0 
-                          ? `${loc.sessionsCount} session(s)`
-                          : `Last: ${loc.lastCheckIn}`
-                        }
-                      </Text>
-                    </View>
-                  )}
-                </View>
-              ))}
-            </TouchableOpacity>
-          ) : activeLocations.length === 2 ? (
-            // Two locations - side by side
-            <View style={styles.locationCardsRow}>
-              {locationCardsData.map(loc => (
-                <TouchableOpacity 
-                  key={loc.id} 
-                  style={styles.locationCardHalf}
-                  onPress={() => router.push('/(tabs)/map')}
-                  activeOpacity={0.7}
-                >
-                  <View style={styles.locationCardHeaderCompact}>
-                    <View style={styles.locationCardIconContainer}>
-                      <View style={styles.locationCardIconGlow} />
-                      <Ionicons name="location" size={22} color={loc.color || colors.primary} />
-                    </View>
-                    <Text style={styles.locationCardNameCompact} numberOfLines={1}>{loc.name}</Text>
-                  </View>
-                  
-                  {loc.hasActiveSession ? (
-                    <View style={styles.locationCardTimeRow}>
-                      <Text style={[styles.locationCardTimeValue, styles.locationCardTimeActive]}>
-                        {loc.activeSessionEntry}
-                      </Text>
-                      <Ionicons name="arrow-forward" size={12} color={colors.success} />
-                    </View>
-                  ) : (
-                    <>
-                      <Text style={styles.locationCardTotalCompact}>{loc.totalFormatted}</Text>
-                      <Text style={styles.locationCardSubtext} numberOfLines={1}>
-                        {selectedDays.size > 0 ? `${loc.sessionsCount} sessions` : loc.lastCheckIn}
-                      </Text>
-                    </>
-                  )}
-                </TouchableOpacity>
-              ))}
-            </View>
-          ) : (
-            // 3+ locations - horizontal scroll
-            <ScrollView 
-              horizontal 
-              showsHorizontalScrollIndicator={false}
-              style={styles.locationCardsScroll}
-              contentContainerStyle={{ gap: 12 }}
-            >
-              {locationCardsData.map(loc => (
-                <TouchableOpacity 
-                  key={loc.id} 
-                  style={styles.locationCardScrollable}
-                  onPress={() => router.push('/(tabs)/map')}
-                  activeOpacity={0.7}
-                >
-                  <View style={styles.locationCardHeaderCompact}>
-                    <View style={styles.locationCardIconContainer}>
-                      <View style={styles.locationCardIconGlow} />
-                      <Ionicons name="location" size={22} color={loc.color || colors.primary} />
-                    </View>
-                    <Text style={styles.locationCardNameCompact} numberOfLines={1}>{loc.name}</Text>
-                  </View>
-                  
-                  {loc.hasActiveSession ? (
-                    <View style={styles.locationCardTimeRow}>
-                      <Text style={[styles.locationCardTimeValue, styles.locationCardTimeActive]}>
-                        {loc.activeSessionEntry}
-                      </Text>
-                      <Ionicons name="arrow-forward" size={12} color={colors.success} />
-                    </View>
-                  ) : (
-                    <>
-                      <Text style={styles.locationCardTotalCompact}>{loc.totalFormatted}</Text>
-                      <Text style={styles.locationCardSubtext} numberOfLines={1}>
-                        {selectedDays.size > 0 ? `${loc.sessionsCount} sessions` : loc.lastCheckIn}
-                      </Text>
-                    </>
-                  )}
-                </TouchableOpacity>
-              ))}
-            </ScrollView>
-          )}
-        </View>
-      )}
 
-      <View style={styles.sectionDivider} />
-
-      {/* CALENDAR HEADER */}
-      <Card style={styles.calendarCard}>
-        <View style={styles.calendarHeader}>
-          <TouchableOpacity 
-            style={styles.navBtn} 
-            onPress={viewMode === 'week' ? goToPreviousWeek : goToPreviousMonth}
+      {/* Entry Time Picker */}
+      {Platform.OS === 'ios' ? (
+        <Modal
+          visible={showEntryPicker}
+          transparent
+          animationType="slide"
+          onRequestClose={() => setShowEntryPicker(false)}
+        >
+          <TouchableOpacity
+            style={fixedStyles.pickerOverlay}
+            activeOpacity={1}
+            onPress={() => setShowEntryPicker(false)}
           >
-            <Ionicons name="chevron-back" size={18} color={colors.textSecondary} />
-          </TouchableOpacity>
-
-          <TouchableOpacity 
-            onPress={viewMode === 'week' ? goToCurrentWeek : goToCurrentMonth} 
-            style={styles.calendarCenter}
-          >
-            <Text style={styles.calendarTitle}>
-              {viewMode === 'week' 
-                ? formatDateRange(weekStart, weekEnd)
-                : formatMonthYear(currentMonth)
-              }
-            </Text>
-            <Text style={styles.calendarTotal}>
-              {formatDuration(viewMode === 'week' ? weekTotalMinutes : monthTotalMinutes)}
-            </Text>
-          </TouchableOpacity>
-
-          <TouchableOpacity 
-            style={styles.navBtn} 
-            onPress={viewMode === 'week' ? goToNextWeek : goToNextMonth}
-          >
-            <Ionicons name="chevron-forward" size={18} color={colors.textSecondary} />
-          </TouchableOpacity>
-        </View>
-
-        {/* View mode toggle */}
-        <View style={styles.viewToggleContainer}>
-          <TouchableOpacity 
-            style={[styles.viewToggleBtn, viewMode === 'week' && styles.viewToggleBtnActive]}
-            onPress={() => setViewMode('week')}
-          >
-            <Text style={[styles.viewToggleText, viewMode === 'week' && styles.viewToggleTextActive]}>Week</Text>
-          </TouchableOpacity>
-          <TouchableOpacity 
-            style={[styles.viewToggleBtn, viewMode === 'month' && styles.viewToggleBtnActive]}
-            onPress={() => setViewMode('month')}
-          >
-            <Text style={[styles.viewToggleText, viewMode === 'month' && styles.viewToggleTextActive]}>Month</Text>
-          </TouchableOpacity>
-        </View>
-      </Card>
-
-      <View style={styles.sectionDivider} />
-
-      {/* WEEK VIEW */}
-      {viewMode === 'week' && (
-        <>
-          {weekCalendarDays.map((day: CalendarDay) => {
-            const dayKey = getDayKey(day.date);
-            const hasSessions = day.sessions.length > 0;
-            const isTodayDate = isToday(day.date);
-            const hasActive = day.sessions.some((s: ComputedSession) => !s.exit_at);
-            const isSelected = selectedDays.has(dayKey);
-
-            return (
-              <TouchableOpacity
-                key={dayKey}
-                style={[
-                  styles.dayRow,
-                  isTodayDate && styles.dayRowToday,
-                  isSelected && styles.dayRowSelected,
-                ]}
-                onPress={() => handleDayPress(dayKey, hasSessions)}
-                onLongPress={() => handleDayLongPress(dayKey, hasSessions)}
-                delayLongPress={400}
-                activeOpacity={0.7}
-              >
-                {selectionMode && hasSessions && (
-                  <View style={[styles.checkbox, isSelected && styles.checkboxSelected]}>
-                    {isSelected && <Ionicons name="checkmark" size={16} color={colors.white} />}
-                  </View>
-                )}
-
-                <View style={styles.dayLeft}>
-                  <Text style={[styles.dayName, isTodayDate && styles.dayNameToday]}>{day.weekday}</Text>
-                  <View style={[styles.dayCircle, isTodayDate && styles.dayCircleToday]}>
-                    <Text style={[styles.dayNumber, isTodayDate && styles.dayNumberToday]}>{day.dayNumber}</Text>
-                  </View>
-                </View>
-
-                <View style={styles.dayRight}>
-                  {!hasSessions ? (
-                    <View style={styles.dayEmpty}>
-                      <Text style={styles.dayEmptyText}>No record</Text>
-                    </View>
-                  ) : (
-                    <View style={styles.dayPreview}>
-                      <Text style={[styles.dayPreviewDuration, hasActive && { color: colors.success }]}>
-                        {hasActive ? 'In progress' : formatDuration(day.totalMinutes)}
-                      </Text>
-                    </View>
-                  )}
-                </View>
-
-                {hasSessions && !selectionMode && (
-                  <Ionicons name="chevron-forward" size={16} color={colors.textSecondary} />
-                )}
-              </TouchableOpacity>
-            );
-          })}
-        </>
-      )}
-
-      {/* MONTH VIEW */}
-      {viewMode === 'month' && (
-        <View style={styles.monthContainer}>
-          {/* Weekday headers */}
-          <View style={styles.monthWeekHeader}>
-            {WEEKDAYS_SHORT.map((d: string, i: number) => (
-              <Text key={i} style={styles.monthWeekHeaderText}>{d}</Text>
-            ))}
-          </View>
-
-          {/* Days grid */}
-          <View style={styles.monthGrid}>
-            {monthCalendarDays.map((date: Date | null, index: number) => {
-              if (!date) {
-                return <View key={`empty-${index}`} style={styles.monthDayEmpty} />;
-              }
-
-              const dayKey = getDayKey(date);
-              const daySessions = getSessionsForDay(date);
-              const hasSessions = daySessions.length > 0;
-              const isTodayDate = isToday(date);
-              const isSelected = selectedDays.has(dayKey);
-              const totalMinutes = getTotalMinutesForDay(date);
-
-              return (
-                <TouchableOpacity
-                  key={dayKey}
-                  style={[
-                    styles.monthDay,
-                    isTodayDate && styles.monthDayToday,
-                    isSelected && styles.monthDaySelected,
-                    hasSessions && styles.monthDayHasData,
-                  ]}
-                  onPress={() => handleDayPress(dayKey, hasSessions)}
-                  onLongPress={() => handleDayLongPress(dayKey, hasSessions)}
-                  delayLongPress={400}
-                  activeOpacity={0.7}
-                >
-                  <Text style={[
-                    styles.monthDayNumber,
-                    isTodayDate && styles.monthDayNumberToday,
-                    isSelected && styles.monthDayNumberSelected,
-                  ]}>
-                    {date.getDate()}
-                  </Text>
-                  {hasSessions && totalMinutes > 0 && (
-                    <View style={styles.monthDayIndicator} />
-                  )}
+            <View style={fixedStyles.pickerContainer}>
+              <View style={fixedStyles.pickerHeader}>
+                <TouchableOpacity onPress={() => setShowEntryPicker(false)}>
+                  <Text style={fixedStyles.pickerCancel}>Cancel</Text>
                 </TouchableOpacity>
-              );
-            })}
-          </View>
-        </View>
-      )}
-
-      {/* BATCH ACTION BAR (when in selection mode) */}
-      {selectionMode && (
-        <View style={styles.batchActionBar}>
-          <Text style={styles.batchActionText}>{selectedDays.size} day(s)</Text>
-          <View style={styles.batchActionButtons}>
-            <TouchableOpacity 
-              style={styles.batchActionBtn}
-              onPress={handleDeleteSelectedDays}
-            >
-              <Ionicons name="trash-outline" size={20} color={colors.accent} />
-            </TouchableOpacity>
-            <TouchableOpacity 
-              style={styles.batchActionBtn}
-              onPress={handleExport}
-            >
-              <Ionicons name="share-outline" size={20} color={colors.accent} />
-            </TouchableOpacity>
-            <TouchableOpacity 
-              style={styles.batchActionBtnCancel}
-              onPress={cancelSelection}
-            >
-              <Ionicons name="close" size={20} color={colors.white} />
-            </TouchableOpacity>
-          </View>
-        </View>
-      )}
-
-      {/* ============================================ */}
-      {/* DAY DETAIL MODAL (FULLSCREEN WITH MARGIN) */}
-      {/* ============================================ */}
-      <Modal
-        visible={showDayModal}
-        transparent
-        animationType="fade"
-        statusBarTranslucent
-        onRequestClose={closeDayModal}
-      >
-        <View style={styles.dayModalOverlay}>
-          <View style={styles.dayModalContainer}>
-            {/* Header with Actions */}
-            <View style={styles.dayModalHeader}>
-              <Text style={styles.dayModalTitle}>
-                {selectedDayForModal?.toLocaleDateString('en-US', { 
-                  weekday: 'long', 
-                  day: '2-digit', 
-                  month: 'short',
-                  year: 'numeric'
-                })}
-              </Text>
-              <View style={styles.dayModalHeaderActions}>
-                {/* Delete Button */}
-                <TouchableOpacity 
-                  style={styles.dayModalHeaderBtn} 
-                  onPress={handleDeleteFromModal}
-                  disabled={dayModalSessions.filter(s => s.exit_at).length === 0}
-                >
-                  <Ionicons 
-                    name="trash-outline" 
-                    size={20} 
-                    color={dayModalSessions.filter(s => s.exit_at).length === 0 ? colors.textMuted : colors.textSecondary} 
-                  />
-                </TouchableOpacity>
-                {/* Export Button */}
-                <TouchableOpacity 
-                  style={styles.dayModalHeaderBtn} 
-                  onPress={handleExportFromModal}
-                  disabled={dayModalSessions.filter(s => s.exit_at).length === 0}
-                >
-                  <Ionicons 
-                    name="share-outline" 
-                    size={20} 
-                    color={dayModalSessions.filter(s => s.exit_at).length === 0 ? colors.textMuted : colors.textSecondary} 
-                  />
-                </TouchableOpacity>
-                {/* Add Button */}
-                <TouchableOpacity 
-                  style={styles.dayModalHeaderBtn} 
-                  onPress={() => selectedDayForModal && openManualEntry(selectedDayForModal)}
-                >
-                  <Ionicons name="add" size={22} color={colors.textSecondary} />
-                </TouchableOpacity>
-                {/* Close Button */}
-                <TouchableOpacity 
-                  style={[styles.dayModalHeaderBtn, styles.dayModalCloseHeaderBtn]} 
-                  onPress={closeDayModal}
-                >
-                  <Ionicons name="close" size={22} color={colors.white} />
+                <Text style={fixedStyles.pickerTitle}>Entry Time</Text>
+                <TouchableOpacity onPress={confirmEntryTime}>
+                  <Text style={fixedStyles.pickerDone}>Done</Text>
                 </TouchableOpacity>
               </View>
+              <DateTimePicker
+                value={tempEntryTime}
+                mode="time"
+                display="spinner"
+                onChange={(e, time) => time && setTempEntryTime(time)}
+                style={fixedStyles.iosTimePicker}
+              />
             </View>
+          </TouchableOpacity>
+        </Modal>
+      ) : (
+        showEntryPicker && (
+          <DateTimePicker
+            value={tempEntryTime}
+            mode="time"
+            display="default"
+            onChange={onEntryTimeChange}
+          />
+        )
+      )}
 
-            {/* Selection controls */}
-            {dayModalSessions.filter(s => s.exit_at).length >= 1 && (
-              <View style={styles.dayModalSelectionBar}>
-                <Text style={styles.dayModalSelectionText}>
-                  {selectedSessions.size > 0 
-                    ? `${selectedSessions.size} selected` 
-                    : 'Tap to select sessions'}
-                </Text>
-                <View style={styles.dayModalSelectionActions}>
-                  {selectedSessions.size > 0 ? (
-                    <TouchableOpacity onPress={deselectAllSessions}>
-                      <Text style={styles.dayModalSelectionBtn}>Clear</Text>
-                    </TouchableOpacity>
-                  ) : (
-                    <TouchableOpacity onPress={selectAllSessions}>
-                      <Text style={styles.dayModalSelectionBtn}>Select All</Text>
-                    </TouchableOpacity>
-                  )}
-                </View>
+      {/* Exit Time Picker */}
+      {Platform.OS === 'ios' ? (
+        <Modal
+          visible={showExitPicker}
+          transparent
+          animationType="slide"
+          onRequestClose={() => setShowExitPicker(false)}
+        >
+          <TouchableOpacity
+            style={fixedStyles.pickerOverlay}
+            activeOpacity={1}
+            onPress={() => setShowExitPicker(false)}
+          >
+            <View style={fixedStyles.pickerContainer}>
+              <View style={fixedStyles.pickerHeader}>
+                <TouchableOpacity onPress={() => setShowExitPicker(false)}>
+                  <Text style={fixedStyles.pickerCancel}>Cancel</Text>
+                </TouchableOpacity>
+                <Text style={fixedStyles.pickerTitle}>Exit Time</Text>
+                <TouchableOpacity onPress={confirmExitTime}>
+                  <Text style={fixedStyles.pickerDone}>Done</Text>
+                </TouchableOpacity>
               </View>
-            )}
-
-            {/* Sessions List - scrollable area */}
-            <ScrollView 
-              style={styles.dayModalSessionsList}
-              contentContainerStyle={styles.dayModalSessionsContent}
-              showsVerticalScrollIndicator={true}
-            >
-              {dayModalSessions.filter(s => s.exit_at).length === 0 ? (
-                <View style={styles.dayModalEmpty}>
-                  <Ionicons name="document-text-outline" size={48} color={colors.textMuted} />
-                  <Text style={styles.dayModalEmptyText}>No completed sessions</Text>
-                  <TouchableOpacity 
-                    style={styles.dayModalAddBtn}
-                    onPress={() => selectedDayForModal && openManualEntry(selectedDayForModal)}
-                  >
-                    <Text style={styles.dayModalAddBtnText}>Add Manual Entry</Text>
-                  </TouchableOpacity>
-                </View>
-              ) : (
-                dayModalSessions
-                  .filter(s => s.exit_at)
-                  .map((session: ComputedSession) => {
-                    const isSessionSelected = selectedSessions.has(session.id);
-                    const isManual = session.type === 'manual';
-                    const isEdited = session.manually_edited === 1 && !isManual;
-                    const pauseMin = session.pause_minutes || 0;
-                    const netTotal = Math.max(0, session.duration_minutes - pauseMin);
-
-                    return (
-                      <TouchableOpacity
-                        key={session.id}
-                        style={[
-                          styles.dayModalSession,
-                          isSessionSelected && styles.dayModalSessionSelected
-                        ]}
-                        onPress={() => toggleSelectSession(session.id)}
-                        onLongPress={() => handleDeleteSession(session)}
-                        delayLongPress={600}
-                      >
-                        <View style={[
-                          styles.dayModalCheckbox,
-                          isSessionSelected && styles.dayModalCheckboxSelected
-                        ]}>
-                          {isSessionSelected && <Ionicons name="checkmark" size={16} color={colors.white} />}
-                        </View>
-                        
-                        <View style={styles.dayModalSessionInfo}>
-                          <View style={styles.dayModalSessionHeader}>
-                            <Text style={styles.dayModalSessionLocation}>{session.location_name}</Text>
-                            <View style={[styles.dayModalSessionDot, { backgroundColor: session.color || colors.primary }]} />
-                          </View>
-                          
-                          <Text style={[
-                            styles.dayModalSessionTime,
-                            (isManual || isEdited) && styles.dayModalSessionTimeEdited
-                          ]}>
-                            {isManual || isEdited ? 'Edited · ' : 'GPS · '}
-                            {formatTimeAMPM(session.entry_at)} → {formatTimeAMPM(session.exit_at!)}
-                          </Text>
-                          
-                          {pauseMin > 0 && (
-                            <Text style={styles.dayModalSessionPause}>Break: {pauseMin}min</Text>
-                          )}
-                          
-                          <Text style={styles.dayModalSessionTotal}>{formatDuration(netTotal)}</Text>
-                        </View>
-                      </TouchableOpacity>
-                    );
-                  })
-              )}
-            </ScrollView>
-
-            {/* Day Total - fixed at bottom */}
-            {dayModalSessions.filter(s => s.exit_at).length > 0 && (
-              <View style={styles.dayModalTotalBar}>
-                <Text style={styles.dayModalTotalLabel}>Day Total</Text>
-                <Text style={styles.dayModalTotalValue}>
-                  {formatDuration(
-                    dayModalSessions
-                      .filter(s => s.exit_at)
-                      .reduce((acc, s) => {
-                        const pauseMin = s.pause_minutes || 0;
-                        return acc + Math.max(0, s.duration_minutes - pauseMin);
-                      }, 0)
-                  )}
-                </Text>
-              </View>
-            )}
-
-            {/* Footer - Close button */}
-            <TouchableOpacity style={styles.dayModalCloseBtn} onPress={closeDayModal}>
-              <Text style={styles.dayModalCloseBtnText}>Close</Text>
-            </TouchableOpacity>
-          </View>
-        </View>
-      </Modal>
-
-      {/* ============================================ */}
-      {/* MANUAL ENTRY MODAL */}
-      {/* ============================================ */}
-      <Modal
-        visible={showManualModal}
-        transparent
-        animationType="slide"
-        onRequestClose={() => setShowManualModal(false)}
-      >
-        <View style={styles.modalOverlay}>
-          <View style={styles.modalContent}>
-            <Text style={styles.modalTitle}>
-              <Ionicons name="create-outline" size={20} color={colors.text} /> Manual Entry
-            </Text>
-            <Text style={styles.modalSubtitle}>
-              {manualDate.toLocaleDateString('en-US', { weekday: 'long', day: '2-digit', month: 'short' })}
-            </Text>
-
-            {/* Mode Toggle */}
-            <View style={styles.entryModeToggle}>
-              <TouchableOpacity
-                style={[styles.entryModeBtn, manualEntryMode === 'hours' && styles.entryModeBtnActive]}
-                onPress={() => setManualEntryMode('hours')}
-              >
-                <Ionicons name="time-outline" size={18} color={manualEntryMode === 'hours' ? colors.buttonPrimaryText : colors.textSecondary} />
-                <Text style={[styles.entryModeBtnText, manualEntryMode === 'hours' && styles.entryModeBtnTextActive]}>Work Hours</Text>
-              </TouchableOpacity>
-              <TouchableOpacity
-                style={[styles.entryModeBtn, manualEntryMode === 'absence' && styles.entryModeBtnActive]}
-                onPress={() => setManualEntryMode('absence')}
-              >
-                <Ionicons name="calendar-outline" size={18} color={manualEntryMode === 'absence' ? colors.buttonPrimaryText : colors.textSecondary} />
-                <Text style={[styles.entryModeBtnText, manualEntryMode === 'absence' && styles.entryModeBtnTextActive]}>Absence</Text>
-              </TouchableOpacity>
+              <DateTimePicker
+                value={tempExitTime}
+                mode="time"
+                display="spinner"
+                onChange={(e, time) => time && setTempExitTime(time)}
+                style={fixedStyles.iosTimePicker}
+              />
             </View>
+          </TouchableOpacity>
+        </Modal>
+      ) : (
+        showExitPicker && (
+          <DateTimePicker
+            value={tempExitTime}
+            mode="time"
+            display="default"
+            onChange={onExitTimeChange}
+          />
+        )
+      )}
 
-            {manualEntryMode === 'hours' ? (
-              <>
-                {/* HOURS MODE - Original form */}
-                <Text style={styles.inputLabel}>Location:</Text>
-                <View style={styles.localPicker}>
-                  {locations.map((location: WorkLocation) => (
-                    <TouchableOpacity
-                      key={location.id}
-                      style={[styles.localOption, manualLocationId === location.id && styles.localOptionActive]}
-                      onPress={() => setManualLocationId(location.id)}
-                    >
-                      <View style={[styles.localDot, { backgroundColor: location.color }]} />
-                      <Text style={[styles.localOptionText, manualLocationId === location.id && styles.localOptionTextActive]}>
-                        {location.name}
-                      </Text>
-                    </TouchableOpacity>
-                  ))}
-                </View>
+      {/* Date Picker */}
+      {showDatePicker && (
+        <DateTimePicker
+          value={selectedDate}
+          mode="date"
+          display={Platform.OS === 'ios' ? 'inline' : 'default'}
+          onChange={onDateChange}
+          maximumDate={new Date()}
+        />
+      )}
+      </ScrollView>
 
-                <View style={styles.timeRow}>
-                  <View style={styles.timeField}>
-                    <Text style={styles.inputLabel}>Entry:</Text>
-                    <View style={styles.timeInputRow}>
-                      <TextInput
-                        style={styles.timeInputSmall}
-                        placeholder="08"
-                        placeholderTextColor={colors.textSecondary}
-                        value={manualEntryH}
-                        onChangeText={(t) => {
-                          const clean = t.replace(/[^0-9]/g, '').slice(0, 2);
-                          setManualEntryH(clean);
-                          if (clean.length === 2) entryMRef.current?.focus();
-                        }}
-                        keyboardType="number-pad"
-                        maxLength={2}
-                        selectTextOnFocus
-                      />
-                      <Text style={styles.timeSeparator}>:</Text>
-                      <TextInput
-                        ref={entryMRef}
-                        style={styles.timeInputSmall}
-                        placeholder="00"
-                        placeholderTextColor={colors.textSecondary}
-                        value={manualEntryM}
-                        onChangeText={(t) => {
-                          const clean = t.replace(/[^0-9]/g, '').slice(0, 2);
-                          setManualEntryM(clean);
-                          if (clean.length === 2) exitHRef.current?.focus();
-                        }}
-                        keyboardType="number-pad"
-                        maxLength={2}
-                        selectTextOnFocus
-                      />
-                    </View>
-                  </View>
-                  <View style={styles.timeField}>
-                    <Text style={styles.inputLabel}>Exit:</Text>
-                    <View style={styles.timeInputRow}>
-                      <TextInput
-                        ref={exitHRef}
-                        style={styles.timeInputSmall}
-                        placeholder="17"
-                        placeholderTextColor={colors.textSecondary}
-                        value={manualExitH}
-                        onChangeText={(t) => {
-                          const clean = t.replace(/[^0-9]/g, '').slice(0, 2);
-                          setManualExitH(clean);
-                          if (clean.length === 2) exitMRef.current?.focus();
-                        }}
-                        keyboardType="number-pad"
-                        maxLength={2}
-                        selectTextOnFocus
-                      />
-                      <Text style={styles.timeSeparator}>:</Text>
-                      <TextInput
-                        ref={exitMRef}
-                        style={styles.timeInputSmall}
-                        placeholder="00"
-                        placeholderTextColor={colors.textSecondary}
-                        value={manualExitM}
-                        onChangeText={(t) => {
-                          const clean = t.replace(/[^0-9]/g, '').slice(0, 2);
-                          setManualExitM(clean);
-                          if (clean.length === 2) pauseRef.current?.focus();
-                        }}
-                        keyboardType="number-pad"
-                        maxLength={2}
-                        selectTextOnFocus
-                      />
-                    </View>
-                  </View>
-                </View>
-
-                <View style={styles.pausaRow}>
-                  <Text style={styles.inputLabel}>Break:</Text>
-                  <TextInput
-                    ref={pauseRef}
-                    style={styles.pausaInput}
-                    placeholder="60"
-                    placeholderTextColor={colors.textSecondary}
-                    value={manualPause}
-                    onChangeText={(t) => setManualPause(t.replace(/[^0-9]/g, '').slice(0, 3))}
-                    keyboardType="number-pad"
-                    maxLength={3}
-                    selectTextOnFocus
-                  />
-                  <Text style={styles.pausaHint}>min</Text>
-                </View>
-
-                <Text style={styles.inputHint}>24h format • Break in minutes</Text>
-              </>
-            ) : (
-              <>
-                {/* ABSENCE MODE - Reason selection */}
-                <Text style={styles.inputLabel}>Reason:</Text>
-                <View style={styles.absenceOptions}>
-                  {[
-                    { type: 'rain', label: 'Rain Day', icon: 'rainy', color: '#3B82F6' },
-                    { type: 'snow', label: 'Snow Day', icon: 'snow', color: '#60A5FA' },
-                    { type: 'sick', label: 'Sick Day', icon: 'medkit', color: '#EF4444' },
-                    { type: 'day_off', label: 'Day Off', icon: 'sunny', color: '#F59E0B' },
-                    { type: 'holiday', label: 'Holiday', icon: 'star', color: '#8B5CF6' },
-                  ].map(option => (
-                    <TouchableOpacity
-                      key={option.type}
-                      style={[
-                        styles.absenceOption,
-                        manualAbsenceType === option.type && styles.absenceOptionActive
-                      ]}
-                      onPress={() => setManualAbsenceType(option.type)}
-                    >
-                      <View style={[styles.absenceOptionIcon, { backgroundColor: option.color }]}>
-                        <Ionicons name={option.icon as any} size={18} color={colors.white} />
-                      </View>
-                      <Text style={[
-                        styles.absenceOptionText,
-                        manualAbsenceType === option.type && styles.absenceOptionTextActive
-                      ]}>
-                        {option.label}
-                      </Text>
-                      {manualAbsenceType === option.type && (
-                        <Ionicons name="checkmark-circle" size={20} color={colors.primary} />
-                      )}
-                    </TouchableOpacity>
-                  ))}
-                </View>
-
-                <Text style={styles.inputHint}>Common in construction when work is not possible</Text>
-              </>
-            )}
-
-            <View style={styles.modalActions}>
-              <TouchableOpacity style={styles.cancelBtn} onPress={() => setShowManualModal(false)}>
-                <Text style={styles.cancelBtnText}>Cancel</Text>
-              </TouchableOpacity>
-              <TouchableOpacity style={styles.saveBtn} onPress={handleSaveManual}>
-                <Text style={styles.saveBtnText}>
-                  {manualEntryMode === 'hours' ? 'Add' : 'Save'}
-                </Text>
-              </TouchableOpacity>
-            </View>
-          </View>
-        </View>
-      </Modal>
-
-      {/* REMOVED: Session Finished Modal - was causing confusion about where reports are */}
-
-      <View style={{ height: 32 }} />
-    </ScrollView>
+      {/* Toast Notification */}
+      {toastMessage !== '' && (
+        <Animated.View
+          style={[
+            toastStyles.toast,
+            { opacity: toastOpacity }
+          ]}
+        >
+          <Text style={toastStyles.toastText}>{toastMessage}</Text>
+        </Animated.View>
+      )}
+    </View>
   );
 }
+
+// Toast notification styles
+const toastStyles = StyleSheet.create({
+  toast: {
+    position: 'absolute',
+    bottom: 100,
+    left: 20,
+    right: 20,
+    backgroundColor: colors.error,
+    paddingVertical: 14,
+    paddingHorizontal: 18,
+    borderRadius: 12,
+    shadowColor: '#000',
+    shadowOffset: { width: 0, height: 4 },
+    shadowOpacity: 0.3,
+    shadowRadius: 8,
+    elevation: 8,
+    zIndex: 9999,
+  },
+  toastText: {
+    color: colors.white,
+    fontSize: 15,
+    fontWeight: '600',
+    textAlign: 'center',
+  },
+});

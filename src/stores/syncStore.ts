@@ -46,7 +46,7 @@ import {
   type LocationAuditDB,
 } from '../lib/database';
 import { useAuthStore } from './authStore';
-import { setReconfiguring } from '../lib/backgroundTasks';
+import { setReconfiguring } from '../lib/geofenceLogic';
 // ============================================
 // CONSTANTS
 // ============================================

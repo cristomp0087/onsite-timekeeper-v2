@@ -164,25 +164,4 @@ export function getDayKey(date: Date): string {
   return `${date.getFullYear()}-${(date.getMonth() + 1).toString().padStart(2, '0')}-${date.getDate().toString().padStart(2, '0')}`;
 }
 
-// ============================================
-// DEPRECATED ALIASES (backward compatibility)
-// Remove after all components updated
-// ============================================
 
-/** @deprecated Use WEEKDAYS instead */
-export const DIAS_SEMANA = WEEKDAYS;
-
-/** @deprecated Use CalendarDay instead */
-export type DiaCalendario = CalendarDay;
-
-/** @deprecated Use getWeekStart instead */
-export const getInicioSemana = getWeekStart;
-
-/** @deprecated Use getWeekEnd instead */
-export const getFimSemana = getWeekEnd;
-
-/** @deprecated Use getMonthStart instead */
-export const getInicioMes = getMonthStart;
-
-/** @deprecated Use getMonthEnd instead */
-export const getFimMes = getMonthEnd;
