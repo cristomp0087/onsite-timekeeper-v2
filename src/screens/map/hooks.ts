@@ -113,31 +113,6 @@ export function useMapScreen() {
     }
   }, [currentLocation, mapReady]);
 
-  // Handle map navigation based on URL params
-  useEffect(() => {
-    if (!mapReady) return;
-
-    if (targetLocationId) {
-      // Long press from home - center specific location
-      const targetLocation = locations.find(loc => loc.id === targetLocationId);
-      if (targetLocation) {
-        logger.info('ui', `🎯 Centering map on: "${targetLocation.name}" (from URL param)`);
-        // Small delay to ensure map is fully rendered
-        setTimeout(() => {
-          animateToLocation(targetLocation.latitude, targetLocation.longitude, 'close');
-        }, 300);
-      } else {
-        logger.warn('ui', `⚠️ Target location not found: ${targetLocationId}`);
-      }
-    } else if (locations.length > 0) {
-      // Normal navigation - fit all locations
-      logger.info('ui', '🗺️ Fitting map to all locations (normal navigation)');
-      setTimeout(() => {
-        fitToAllLocations();
-      }, 300);
-    }
-  }, [mapReady, targetLocationId, locations, animateToLocation, fitToAllLocations]);
-
   // ============================================
   // HELPERS
   // ============================================
@@ -205,6 +180,31 @@ export function useMapScreen() {
       animated: true,
     });
   }, [locations, currentLocation, animateToLocation]);
+
+  // Handle map navigation based on URL params
+  useEffect(() => {
+    if (!mapReady) return;
+
+    if (targetLocationId) {
+      // Long press from home - center specific location
+      const targetLocation = locations.find(loc => loc.id === targetLocationId);
+      if (targetLocation) {
+        logger.info('ui', `🎯 Centering map on: "${targetLocation.name}" (from URL param)`);
+        // Small delay to ensure map is fully rendered
+        setTimeout(() => {
+          animateToLocation(targetLocation.latitude, targetLocation.longitude, 'close');
+        }, 300);
+      } else {
+        logger.warn('ui', `⚠️ Target location not found: ${targetLocationId}`);
+      }
+    } else if (locations.length > 0) {
+      // Normal navigation - fit all locations
+      logger.info('ui', '🗺️ Fitting map to all locations (normal navigation)');
+      setTimeout(() => {
+        fitToAllLocations();
+      }, 300);
+    }
+  }, [mapReady, targetLocationId, locations, animateToLocation, fitToAllLocations]);
 
   // ============================================
   // HANDLERS
